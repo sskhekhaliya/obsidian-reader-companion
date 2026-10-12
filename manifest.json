@@ -1,0 +1,11 @@
+{
+  "id": "obsidian-reader-companion",
+  "name": "Reader Companion",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Smart selection popup menu in reading mode for instant definitions, translations, highlights, and annotations with a dedicated sidebar panel.",
+  "author": "SSKhekhaliya",
+  "authorUrl": "https://www.sskhekhaliya.in/",
+  "fundingUrl": "https://buymeacoffee.com/sskhekhaliya",
+  "isDesktopOnly": false
+}

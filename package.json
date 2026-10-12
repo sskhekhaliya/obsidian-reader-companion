@@ -1,0 +1,31 @@
+{
+  "name": "obsidian-reader-companion",
+  "version": "1.0.0",
+  "description": "Instant definition, translation, highlights, and note-taking popup menu for Obsidian reading mode, with a dedicated right-side annotations view.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "check": "tsc --noEmit"
+  },
+  "keywords": [
+    "obsidian",
+    "reading-mode",
+    "dictionary",
+    "translation",
+    "highlights",
+    "annotations",
+    "reader"
+  ],
+  "author": {
+    "name": "SSKhekhaliya",
+    "url": "https://www.sskhekhaliya.in/"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "esbuild": "^0.24.0",
+    "obsidian": "latest",
+    "typescript": "^5.5.4"
+  }
+}
