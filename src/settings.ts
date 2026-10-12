@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ReaderCompanionPlugin from "./main";
 import { HIGHLIGHT_COLORS } from "./types";
 import { SUPPORTED_LANGUAGES } from "./translator";
@@ -116,6 +116,22 @@ export class ReaderCompanionSettingTab extends PluginSettingTab {
         toggle.onChange(async (val) => {
           this.plugin.settings.autoPronounce = val;
           await this.plugin.savePluginData();
+        });
+      });
+
+    // Vault Storage & Backup
+    containerEl.createEl("h3", { text: "Data & Storage Persistence" });
+    new Setting(containerEl)
+      .setName("Vault Storage (.reader-companion/annotations.json)")
+      .setDesc(
+        "All highlights and notes are safely saved in your vault root (.reader-companion/annotations.json). Your data survives plugin uninstalls and syncs across devices via Obsidian Sync, Git, or iCloud."
+      )
+      .addButton((btn) => {
+        btn.setButtonText("Reload from Vault");
+        btn.setTooltip("Re-read annotations from .reader-companion/annotations.json");
+        btn.onClick(async () => {
+          await this.plugin.reloadVaultAnnotations();
+          new Notice("Annotations reloaded from vault storage!");
         });
       });
   }

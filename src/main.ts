@@ -148,6 +148,15 @@ export default class ReaderCompanionPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: "reload-annotations",
+      name: "Reload Annotations from Vault (.reader-companion)",
+      callback: async () => {
+        await this.reloadVaultAnnotations();
+        new Notice("Annotations reloaded from vault storage!");
+      }
+    });
+
     this.updateThemeClass();
   }
 
@@ -158,6 +167,9 @@ export default class ReaderCompanionPlugin extends Plugin {
     this.noteModal.hide();
     document.body.removeClass("rc-theme-dark", "rc-theme-light", "rc-theme-sepia");
   }
+
+  private readonly VAULT_STORAGE_DIR = ".reader-companion";
+  private readonly VAULT_STORAGE_FILE = ".reader-companion/annotations.json";
 
   async loadPluginData(): Promise<void> {
     const loaded = await this.loadData();
@@ -176,11 +188,65 @@ export default class ReaderCompanionPlugin extends Plugin {
       }
     }
     this.settings = this.data.settings;
+
+    // Load annotations from vault-level file (.reader-companion/annotations.json)
+    try {
+      if (await this.app.vault.adapter.exists(this.VAULT_STORAGE_FILE)) {
+        const content = await this.app.vault.adapter.read(this.VAULT_STORAGE_FILE);
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === "object") {
+          this.data.annotations = parsed;
+        }
+      } else if (Object.keys(this.data.annotations).length > 0) {
+        // Migrate existing plugin data to vault-level file
+        if (!(await this.app.vault.adapter.exists(this.VAULT_STORAGE_DIR))) {
+          await this.app.vault.adapter.mkdir(this.VAULT_STORAGE_DIR);
+        }
+        await this.app.vault.adapter.write(
+          this.VAULT_STORAGE_FILE,
+          JSON.stringify(this.data.annotations, null, 2)
+        );
+      }
+    } catch (err) {
+      console.error("[Reader Companion] Error loading vault annotations:", err);
+    }
   }
 
   async savePluginData(): Promise<void> {
     this.data.settings = this.settings;
     await this.saveData(this.data);
+
+    // Persist annotations to vault-level file (.reader-companion/annotations.json)
+    try {
+      if (!(await this.app.vault.adapter.exists(this.VAULT_STORAGE_DIR))) {
+        await this.app.vault.adapter.mkdir(this.VAULT_STORAGE_DIR);
+      }
+      await this.app.vault.adapter.write(
+        this.VAULT_STORAGE_FILE,
+        JSON.stringify(this.data.annotations, null, 2)
+      );
+    } catch (err) {
+      console.error("[Reader Companion] Error saving vault annotations:", err);
+    }
+  }
+
+  async reloadVaultAnnotations(): Promise<void> {
+    try {
+      if (await this.app.vault.adapter.exists(this.VAULT_STORAGE_FILE)) {
+        const content = await this.app.vault.adapter.read(this.VAULT_STORAGE_FILE);
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === "object") {
+          this.data.annotations = parsed;
+          const activeFile = this.app.workspace.getActiveFile();
+          if (activeFile) {
+            this.reapplyHighlightsForFile(activeFile.path);
+          }
+          this.storage.trigger("changed", activeFile?.path || "");
+        }
+      }
+    } catch (err) {
+      console.error("[Reader Companion] Error reloading vault annotations:", err);
+    }
   }
 
   updateThemeClass(): void {

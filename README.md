@@ -25,8 +25,9 @@
   - Audio pronunciation for translated phrases.
   - One-click copy and "Open in Google Translate" button.
 
-- **🎨 Non-Destructive Highlights & Notes**:
-  - **Zero file pollution**: Highlights and notes are stored strictly in plugin data and do **not** alter your original markdown notes.
+- **🎨 Non-Destructive Highlights & Safe Vault Storage**:
+  - **Zero file pollution**: Highlights and notes are saved non-destructively and do **not** clutter your original markdown files.
+  - **Safe Vault Storage (`.reader-companion/annotations.json`)**: Stored directly in your vault root so your annotations survive plugin uninstalls and sync seamlessly across devices via Obsidian Sync, Git, or iCloud.
   - Inline marks appear seamlessly in Reading Mode.
   - 5 vibrant highlight colors: Yellow (`#fbbc04`), Red (`#ea4335`), Green (`#34a853`), Blue (`#1a73e8`), and Purple (`#a142f4`).
 

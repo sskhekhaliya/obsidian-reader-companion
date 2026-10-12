@@ -1767,6 +1767,17 @@ var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab 
         await this.plugin.savePluginData();
       });
     });
+    containerEl.createEl("h3", { text: "Data & Storage Persistence" });
+    new import_obsidian5.Setting(containerEl).setName("Vault Storage (.reader-companion/annotations.json)").setDesc(
+      "All highlights and notes are safely saved in your vault root (.reader-companion/annotations.json). Your data survives plugin uninstalls and syncs across devices via Obsidian Sync, Git, or iCloud."
+    ).addButton((btn) => {
+      btn.setButtonText("Reload from Vault");
+      btn.setTooltip("Re-read annotations from .reader-companion/annotations.json");
+      btn.onClick(async () => {
+        await this.plugin.reloadVaultAnnotations();
+        new import_obsidian5.Notice("Annotations reloaded from vault storage!");
+      });
+    });
   }
 };
 
@@ -1781,6 +1792,8 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     };
     this.settings = { ...DEFAULT_SETTINGS };
     this.isMouseSelecting = false;
+    this.VAULT_STORAGE_DIR = ".reader-companion";
+    this.VAULT_STORAGE_FILE = ".reader-companion/annotations.json";
   }
   async onload() {
     await this.loadPluginData();
@@ -1873,6 +1886,14 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
         }
       }
     });
+    this.addCommand({
+      id: "reload-annotations",
+      name: "Reload Annotations from Vault (.reader-companion)",
+      callback: async () => {
+        await this.reloadVaultAnnotations();
+        new import_obsidian6.Notice("Annotations reloaded from vault storage!");
+      }
+    });
     this.updateThemeClass();
   }
   onunload() {
@@ -1899,10 +1920,58 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       }
     }
     this.settings = this.data.settings;
+    try {
+      if (await this.app.vault.adapter.exists(this.VAULT_STORAGE_FILE)) {
+        const content = await this.app.vault.adapter.read(this.VAULT_STORAGE_FILE);
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === "object") {
+          this.data.annotations = parsed;
+        }
+      } else if (Object.keys(this.data.annotations).length > 0) {
+        if (!await this.app.vault.adapter.exists(this.VAULT_STORAGE_DIR)) {
+          await this.app.vault.adapter.mkdir(this.VAULT_STORAGE_DIR);
+        }
+        await this.app.vault.adapter.write(
+          this.VAULT_STORAGE_FILE,
+          JSON.stringify(this.data.annotations, null, 2)
+        );
+      }
+    } catch (err) {
+      console.error("[Reader Companion] Error loading vault annotations:", err);
+    }
   }
   async savePluginData() {
     this.data.settings = this.settings;
     await this.saveData(this.data);
+    try {
+      if (!await this.app.vault.adapter.exists(this.VAULT_STORAGE_DIR)) {
+        await this.app.vault.adapter.mkdir(this.VAULT_STORAGE_DIR);
+      }
+      await this.app.vault.adapter.write(
+        this.VAULT_STORAGE_FILE,
+        JSON.stringify(this.data.annotations, null, 2)
+      );
+    } catch (err) {
+      console.error("[Reader Companion] Error saving vault annotations:", err);
+    }
+  }
+  async reloadVaultAnnotations() {
+    try {
+      if (await this.app.vault.adapter.exists(this.VAULT_STORAGE_FILE)) {
+        const content = await this.app.vault.adapter.read(this.VAULT_STORAGE_FILE);
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === "object") {
+          this.data.annotations = parsed;
+          const activeFile = this.app.workspace.getActiveFile();
+          if (activeFile) {
+            this.reapplyHighlightsForFile(activeFile.path);
+          }
+          this.storage.trigger("changed", activeFile?.path || "");
+        }
+      }
+    } catch (err) {
+      console.error("[Reader Companion] Error reloading vault annotations:", err);
+    }
   }
   updateThemeClass() {
     document.body.removeClass("rc-theme-dark", "rc-theme-light", "rc-theme-sepia");
