@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, MarkdownView, Notice } from "obsidian";
+import { Plugin, WorkspaceLeaf, MarkdownView, Notice, TFile, TAbstractFile } from "obsidian";
 import {
   AnnotationItem,
   ReaderCompanionData,
@@ -89,16 +89,35 @@ export default class ReaderCompanionPlugin extends Plugin {
       }
     });
 
-    // Reapply highlights on file open
+    // Listen for file/folder renames or moves to dynamically update annotation paths
     this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
+      this.app.vault.on("rename", async (file: TAbstractFile, oldPath: string) => {
+        const newTitle = file instanceof TFile ? file.basename : undefined;
+        const changed = await this.storage.handleRename(oldPath, file.path, newTitle);
+        if (changed) {
+          this.reapplyHighlightsForFile(file.path);
+        }
+      })
+    );
+
+    // Reapply highlights on file open & heal if previously moved
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
         if (file) {
+          if (!this.storage.hasAnnotationsForFile(file.path)) {
+            await this.storage.checkAndHealForFile(file);
+          }
           setTimeout(() => {
             this.reapplyHighlightsForFile(file.path);
           }, 80);
         }
       })
     );
+
+    // Reconcile moved files once vault workspace layout is ready
+    this.app.workspace.onLayoutReady(() => {
+      this.storage.reconcileAnnotations();
+    });
 
     // Reapply highlights on layout change
     this.registerEvent(
@@ -154,6 +173,19 @@ export default class ReaderCompanionPlugin extends Plugin {
       callback: async () => {
         await this.reloadVaultAnnotations();
         new Notice("Annotations reloaded from vault storage!");
+      }
+    });
+
+    this.addCommand({
+      id: "reconcile-annotations",
+      name: "Reconcile moved / renamed notes (Auto-heal)",
+      callback: async () => {
+        const healed = await this.storage.reconcileAnnotations();
+        if (healed > 0) {
+          new Notice(`Reader Companion: Reconciled ${healed} note(s)!`);
+        } else {
+          new Notice("Reader Companion: All annotation locations are up to date.");
+        }
       }
     });
 

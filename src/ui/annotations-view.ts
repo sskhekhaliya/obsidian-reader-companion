@@ -206,8 +206,20 @@ export class ReaderCompanionView extends ItemView {
     const fileLink = infoCol.createSpan({ cls: "rc-card-file-link" });
     fileLink.setText(item.fileTitle);
     fileLink.title = "Source note: " + item.fileTitle;
-    fileLink.addEventListener("click", () => {
-      this.app.workspace.openLinkText(item.filePath, "", false);
+    fileLink.addEventListener("click", async () => {
+      const file = await this.plugin.storage.resolveFile(item.filePath, item.fileTitle, item.text);
+      if (file) {
+        let leaf = this.app.workspace.getLeavesOfType("markdown").find(
+          (l) => (l.view as any)?.file?.path === file.path
+        );
+        if (!leaf) {
+          leaf = this.app.workspace.getLeaf(false);
+          await leaf.openFile(file);
+        }
+        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      } else {
+        new Notice(`Note "${item.fileTitle}" was not found in the vault.`);
+      }
     });
 
     // Three-dot vertical options menu
@@ -329,8 +341,13 @@ export class ReaderCompanionView extends ItemView {
   }
 
   private async jumpToText(filePath: string, text: string, annotationId?: string): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(filePath);
-    if (!file || !(file instanceof TFile)) return;
+    const file = await this.plugin.storage.resolveFile(filePath, undefined, text);
+    if (!file) {
+      new Notice("Could not locate the note for this highlight in the vault.");
+      return;
+    }
+
+    filePath = file.path;
 
     let targetLeaf = this.app.workspace.getLeavesOfType("markdown").find(
       (l) => (l.view as any)?.file?.path === filePath

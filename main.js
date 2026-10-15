@@ -56,6 +56,10 @@ var StorageManager = class extends import_obsidian.Events {
     const list = this.plugin.data.annotations[filePath] || [];
     return [...list].sort((a, b) => b.createdAt - a.createdAt);
   }
+  hasAnnotationsForFile(filePath) {
+    const list = this.plugin.data.annotations[filePath];
+    return !!(list && list.length > 0);
+  }
   getAllAnnotations() {
     const all = [];
     for (const filePath of Object.keys(this.plugin.data.annotations)) {
@@ -140,6 +144,213 @@ var StorageManager = class extends import_obsidian.Events {
       await this.plugin.savePluginData();
       this.trigger("changed", filePath);
     }
+  }
+  /**
+   * Handles vault rename/move events for files and folders.
+   * Updates dictionary keys and every annotation's filePath and fileTitle.
+   */
+  async handleRename(oldPath, newPath, newTitle) {
+    if (!oldPath || !newPath || oldPath === newPath) return false;
+    let modified = false;
+    if (this.plugin.data.annotations[oldPath]) {
+      const oldList = this.plugin.data.annotations[oldPath];
+      for (const item of oldList) {
+        item.filePath = newPath;
+        if (newTitle) {
+          item.fileTitle = newTitle;
+        }
+      }
+      if (this.plugin.data.annotations[newPath]) {
+        const existingIds = new Set(this.plugin.data.annotations[newPath].map((a) => a.id));
+        for (const item of oldList) {
+          if (!existingIds.has(item.id)) {
+            this.plugin.data.annotations[newPath].push(item);
+          }
+        }
+      } else {
+        this.plugin.data.annotations[newPath] = oldList;
+      }
+      delete this.plugin.data.annotations[oldPath];
+      modified = true;
+    }
+    const oldPrefix = oldPath.endsWith("/") ? oldPath : oldPath + "/";
+    const newPrefix = newPath.endsWith("/") ? newPath : newPath + "/";
+    for (const key of Object.keys(this.plugin.data.annotations)) {
+      if (key.startsWith(oldPrefix)) {
+        const suffix = key.slice(oldPrefix.length);
+        const updatedKey = newPrefix + suffix;
+        const list = this.plugin.data.annotations[key];
+        for (const item of list) {
+          item.filePath = updatedKey;
+        }
+        if (this.plugin.data.annotations[updatedKey]) {
+          const existingIds = new Set(this.plugin.data.annotations[updatedKey].map((a) => a.id));
+          for (const item of list) {
+            if (!existingIds.has(item.id)) {
+              this.plugin.data.annotations[updatedKey].push(item);
+            }
+          }
+        } else {
+          this.plugin.data.annotations[updatedKey] = list;
+        }
+        delete this.plugin.data.annotations[key];
+        modified = true;
+      }
+    }
+    if (modified) {
+      await this.plugin.savePluginData();
+      this.trigger("changed", newPath);
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Dynamically resolves a file across the vault even if it has moved or renamed.
+   * Auto-heals and migrates the stored annotation location when matched.
+   */
+  async resolveFile(filePath, fileTitle, sampleText) {
+    const direct = this.plugin.app.vault.getAbstractFileByPath(filePath);
+    if (direct instanceof import_obsidian.TFile) {
+      return direct;
+    }
+    const destByPath = this.plugin.app.metadataCache.getFirstLinkpathDest(filePath, "");
+    if (destByPath instanceof import_obsidian.TFile) {
+      await this.handleRename(filePath, destByPath.path, destByPath.basename);
+      return destByPath;
+    }
+    if (fileTitle) {
+      const destByTitle = this.plugin.app.metadataCache.getFirstLinkpathDest(fileTitle, "");
+      if (destByTitle instanceof import_obsidian.TFile) {
+        await this.handleRename(filePath, destByTitle.path, destByTitle.basename);
+        return destByTitle;
+      }
+    }
+    const mdFiles = this.plugin.app.vault.getMarkdownFiles();
+    const targetFileName = filePath.split("/").pop() || "";
+    const cleanTitle = fileTitle || (targetFileName.endsWith(".md") ? targetFileName.slice(0, -3) : targetFileName);
+    const candidates = mdFiles.filter((f) => {
+      return f.name === targetFileName || f.basename === cleanTitle || f.name.toLowerCase() === targetFileName.toLowerCase() || f.basename.toLowerCase() === cleanTitle.toLowerCase();
+    });
+    if (candidates.length === 1) {
+      const matched = candidates[0];
+      await this.handleRename(filePath, matched.path, matched.basename);
+      return matched;
+    }
+    if (candidates.length > 1) {
+      if (sampleText && sampleText.trim().length > 5) {
+        const cleanSample = sampleText.trim();
+        for (const cand of candidates) {
+          try {
+            const content = await this.plugin.app.vault.cachedRead(cand);
+            if (content.includes(cleanSample)) {
+              await this.handleRename(filePath, cand.path, cand.basename);
+              return cand;
+            }
+          } catch {
+          }
+        }
+      }
+      const matched = candidates[0];
+      await this.handleRename(filePath, matched.path, matched.basename);
+      return matched;
+    }
+    if (sampleText && sampleText.trim().length >= 20) {
+      const cleanSample = sampleText.trim();
+      for (const file of mdFiles) {
+        try {
+          const content = await this.plugin.app.vault.cachedRead(file);
+          if (content.includes(cleanSample)) {
+            await this.handleRename(filePath, file.path, file.basename);
+            return file;
+          }
+        } catch {
+        }
+      }
+    }
+    return null;
+  }
+  /**
+   * Checks if an opened file has orphaned annotations stored under an old or moved path,
+   * and heals them dynamically.
+   */
+  async checkAndHealForFile(file) {
+    if (this.hasAnnotationsForFile(file.path)) {
+      return false;
+    }
+    const deadKeys = [];
+    for (const key of Object.keys(this.plugin.data.annotations)) {
+      const exists = this.plugin.app.vault.getAbstractFileByPath(key);
+      if (!exists) {
+        deadKeys.push(key);
+      }
+    }
+    if (deadKeys.length === 0) return false;
+    let healed = false;
+    let fileContent = null;
+    for (const deadKey of deadKeys) {
+      const items = this.plugin.data.annotations[deadKey];
+      if (!items || items.length === 0) continue;
+      const firstItem = items[0];
+      const deadFileName = deadKey.split("/").pop() || "";
+      const matchesName = deadFileName === file.name || firstItem.fileTitle === file.basename || deadFileName.toLowerCase() === file.name.toLowerCase() || firstItem.fileTitle.toLowerCase() === file.basename.toLowerCase();
+      if (matchesName) {
+        if (firstItem.text && firstItem.text.trim().length > 5) {
+          if (fileContent === null) {
+            try {
+              fileContent = await this.plugin.app.vault.cachedRead(file);
+            } catch {
+              fileContent = "";
+            }
+          }
+          if (fileContent && !fileContent.includes(firstItem.text.trim())) {
+            continue;
+          }
+        }
+        await this.handleRename(deadKey, file.path, file.basename);
+        healed = true;
+        break;
+      }
+    }
+    return healed;
+  }
+  /**
+   * Scans all stored annotations across the vault and resolves/heals any paths that no longer exist.
+   */
+  async reconcileAnnotations() {
+    let healedCount = 0;
+    const paths = Object.keys(this.plugin.data.annotations);
+    for (const path of paths) {
+      const abstractFile = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (abstractFile instanceof import_obsidian.TFile) {
+        const items2 = this.plugin.data.annotations[path] || [];
+        let titleChanged = false;
+        for (const item of items2) {
+          if (item.fileTitle !== abstractFile.basename) {
+            item.fileTitle = abstractFile.basename;
+            titleChanged = true;
+          }
+        }
+        if (titleChanged) {
+          healedCount++;
+        }
+        continue;
+      }
+      const items = this.plugin.data.annotations[path];
+      if (!items || items.length === 0) {
+        delete this.plugin.data.annotations[path];
+        continue;
+      }
+      const sample = items[0];
+      const resolved = await this.resolveFile(path, sample.fileTitle, sample.text);
+      if (resolved) {
+        healedCount++;
+      }
+    }
+    if (healedCount > 0) {
+      await this.plugin.savePluginData();
+      this.trigger("changed", "");
+    }
+    return healedCount;
   }
 };
 
@@ -1465,8 +1676,20 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
     const fileLink = infoCol.createSpan({ cls: "rc-card-file-link" });
     fileLink.setText(item.fileTitle);
     fileLink.title = "Source note: " + item.fileTitle;
-    fileLink.addEventListener("click", () => {
-      this.app.workspace.openLinkText(item.filePath, "", false);
+    fileLink.addEventListener("click", async () => {
+      const file = await this.plugin.storage.resolveFile(item.filePath, item.fileTitle, item.text);
+      if (file) {
+        let leaf = this.app.workspace.getLeavesOfType("markdown").find(
+          (l) => l.view?.file?.path === file.path
+        );
+        if (!leaf) {
+          leaf = this.app.workspace.getLeaf(false);
+          await leaf.openFile(file);
+        }
+        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      } else {
+        new import_obsidian4.Notice(`Note "${item.fileTitle}" was not found in the vault.`);
+      }
     });
     const menuBtn = topRow.createEl("button", {
       cls: "rc-card-action-btn rc-more-btn",
@@ -1560,8 +1783,12 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
     dateSpan.setText(this.formatDate(item.createdAt));
   }
   async jumpToText(filePath, text, annotationId) {
-    const file = this.app.vault.getAbstractFileByPath(filePath);
-    if (!file || !(file instanceof import_obsidian4.TFile)) return;
+    const file = await this.plugin.storage.resolveFile(filePath, void 0, text);
+    if (!file) {
+      new import_obsidian4.Notice("Could not locate the note for this highlight in the vault.");
+      return;
+    }
+    filePath = file.path;
     let targetLeaf = this.app.workspace.getLeavesOfType("markdown").find(
       (l) => l.view?.file?.path === filePath
     );
@@ -1838,14 +2065,29 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       }
     });
     this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
+      this.app.vault.on("rename", async (file, oldPath) => {
+        const newTitle = file instanceof import_obsidian6.TFile ? file.basename : void 0;
+        const changed = await this.storage.handleRename(oldPath, file.path, newTitle);
+        if (changed) {
+          this.reapplyHighlightsForFile(file.path);
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
         if (file) {
+          if (!this.storage.hasAnnotationsForFile(file.path)) {
+            await this.storage.checkAndHealForFile(file);
+          }
           setTimeout(() => {
             this.reapplyHighlightsForFile(file.path);
           }, 80);
         }
       })
     );
+    this.app.workspace.onLayoutReady(() => {
+      this.storage.reconcileAnnotations();
+    });
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         const activeFile = this.app.workspace.getActiveFile();
@@ -1892,6 +2134,18 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       callback: async () => {
         await this.reloadVaultAnnotations();
         new import_obsidian6.Notice("Annotations reloaded from vault storage!");
+      }
+    });
+    this.addCommand({
+      id: "reconcile-annotations",
+      name: "Reconcile moved / renamed notes (Auto-heal)",
+      callback: async () => {
+        const healed = await this.storage.reconcileAnnotations();
+        if (healed > 0) {
+          new import_obsidian6.Notice(`Reader Companion: Reconciled ${healed} note(s)!`);
+        } else {
+          new import_obsidian6.Notice("Reader Companion: All annotation locations are up to date.");
+        }
       }
     });
     this.updateThemeClass();
