@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ReaderCompanionPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/types.ts
 var HIGHLIGHT_COLORS = [
@@ -42,7 +42,14 @@ var DEFAULT_SETTINGS = {
   uiTheme: "auto",
   autoPronounce: false,
   showSearchVault: true,
-  minSelectionLength: 1
+  minSelectionLength: 1,
+  enableVocabulary: true,
+  autoSaveVocabulary: true,
+  vocabularyFilePath: "Vocabulary.md",
+  vocabularyHeadingLevel: "h3",
+  addVocabularyProperty: true,
+  vocabularyPropertyKey: "type",
+  vocabularyPropertyValue: "vocabulary"
 };
 
 // src/storage.ts
@@ -542,6 +549,12 @@ var ICONS = {
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
     <polyline points="7 10 12 15 17 10" />
     <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>`,
+  bookmark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="rc-icon">
+    <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>
+  </svg>`,
+  bookmarkCheck: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="rc-icon">
+    <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>
   </svg>`
 };
 
@@ -554,7 +567,7 @@ var SelectionMenu = class {
     this.cleanWord = "";
     this.isSingleWord = false;
     this.keydownHandler = null;
-    this.mousedownHandler = null;
+    this.outsidePointerHandler = null;
     this.callbacks = callbacks;
   }
   show(coords, text, existing) {
@@ -594,6 +607,14 @@ var SelectionMenu = class {
         this.callbacks.onDefine(this.cleanWord, savedCoords);
       });
     }
+    const canShowVocab = !this.callbacks.shouldShowAddToVocabulary || this.callbacks.shouldShowAddToVocabulary();
+    if (this.isSingleWord && this.callbacks.onAddToVocabulary && canShowVocab) {
+      this.createMenuItem(listEl, ICONS.bookmark, "Add to vocabulary", () => {
+        const savedCoords = { ...this.coords };
+        this.hide();
+        this.callbacks.onAddToVocabulary(this.cleanWord, savedCoords);
+      });
+    }
     this.createMenuItem(listEl, ICONS.search, "Search vault", () => {
       this.hide();
       this.callbacks.onSearchVault(this.text);
@@ -631,32 +652,47 @@ var SelectionMenu = class {
     }
     this.el.appendChild(colorRow);
     document.body.appendChild(this.el);
-    const menuWidth = 190;
+    const vw = window.visualViewport?.width ?? window.innerWidth;
+    const vh = window.visualViewport?.height ?? window.innerHeight;
+    const vx = window.visualViewport?.offsetLeft ?? 0;
+    const vy = window.visualViewport?.offsetTop ?? 0;
+    const menuWidth = 185;
     const estimatedHeight = (this.isSingleWord ? 240 : 200) + (this.existing ? 35 : 0);
-    const isNearTop = coords.y - estimatedHeight < 20;
     let posX = coords.x;
-    if (posX - menuWidth / 2 < 12) {
-      posX = menuWidth / 2 + 12;
-    } else if (posX + menuWidth / 2 > window.innerWidth - 12) {
-      posX = window.innerWidth - menuWidth / 2 - 12;
-    }
+    const halfWidth = menuWidth / 2;
+    posX = Math.max(vx + halfWidth + 10, Math.min(vx + vw - halfWidth - 10, posX));
+    const spaceAbove = coords.y - vy;
+    const bottomTarget = coords.bottomY ?? coords.y + 24;
+    const spaceBelow = vy + vh - bottomTarget;
     let topPos;
-    let transform;
-    if (isNearTop && coords.bottomY) {
-      topPos = coords.bottomY + 10;
-      transform = "translate(-50%, 0)";
+    let translateY;
+    if (spaceAbove >= estimatedHeight + 15) {
+      topPos = Math.max(vy + 10, coords.y - 10);
+      translateY = "-100%";
+    } else if (spaceBelow >= estimatedHeight + 15) {
+      topPos = Math.min(vy + vh - estimatedHeight - 10, bottomTarget + 10);
+      translateY = "0%";
     } else {
-      topPos = coords.y - 10;
-      transform = "translate(-50%, -100%)";
+      if (spaceBelow >= spaceAbove) {
+        topPos = Math.max(vy + 10, Math.min(vy + vh - estimatedHeight - 10, bottomTarget + 6));
+        translateY = "0%";
+      } else {
+        topPos = Math.max(vy + estimatedHeight + 10, coords.y - 6);
+        translateY = "-100%";
+      }
     }
-    this.el.style.left = `${posX}px`;
-    this.el.style.top = `${topPos}px`;
-    this.el.style.transform = transform;
+    this.el.style.setProperty("--rc-translate-y", translateY);
+    this.el.style.left = `${Math.round(posX)}px`;
+    this.el.style.top = `${Math.round(topPos)}px`;
+    this.el.style.transform = `translate(-50%, ${translateY})`;
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
     setTimeout(() => {
-      this.mousedownHandler = (e) => {
-        if (this.el && !this.el.contains(e.target)) {
+      this.outsidePointerHandler = (e) => {
+        const target = e instanceof MouseEvent ? e.target : e.touches?.[0]?.target || e.target;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -665,9 +701,10 @@ var SelectionMenu = class {
           this.hide();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
   }
   createMenuItem(container, iconSvg, title, onClick) {
     const btn = document.createElement("button");
@@ -681,9 +718,10 @@ var SelectionMenu = class {
     container.appendChild(btn);
   }
   hide() {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);
@@ -700,24 +738,92 @@ var SelectionMenu = class {
   }
 };
 
+// src/ui/definition-modal.ts
+var import_obsidian3 = require("obsidian");
+
 // src/dictionary.ts
 var import_obsidian2 = require("obsidian");
 var DictionaryService = class {
   /**
    * Look up definition using Free Dictionary API, with fallback to Wiktionary.
+   * Automatically resolves inflected/plural forms (e.g. "interactions" -> "interaction",
+   * "peers" -> "peer") so full definitions, phonetics, and examples are always returned.
    */
   static async lookup(rawWord) {
     const cleanWord = rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     if (!cleanWord) return null;
+    let result = await this.lookupDirect(cleanWord);
+    const inflectionInfo = result ? this.extractInflectionInfo(result) : null;
+    let targetRoot = inflectionInfo?.root;
+    if (!targetRoot && (!result || result.meanings.length === 0)) {
+      targetRoot = this.guessBaseWord(cleanWord);
+    }
+    if (targetRoot && targetRoot.toLowerCase() !== cleanWord.toLowerCase()) {
+      try {
+        const rootResult = await this.lookupDirect(targetRoot);
+        if (rootResult && rootResult.meanings && rootResult.meanings.length > 0) {
+          return {
+            word: cleanWord,
+            rootWord: targetRoot,
+            inflectionNote: inflectionInfo?.note || `plural/form of ${targetRoot}`,
+            phonetic: rootResult.phonetic || result?.phonetic,
+            phonetics: rootResult.phonetics && rootResult.phonetics.length > 0 ? rootResult.phonetics : result?.phonetics,
+            meanings: rootResult.meanings
+          };
+        }
+      } catch {
+      }
+    }
+    return result;
+  }
+  static async lookupDirect(word) {
     try {
-      const freeDictResult = await this.lookupFreeDict(cleanWord);
+      const freeDictResult = await this.lookupFreeDict(word);
       if (freeDictResult) return freeDictResult;
     } catch {
     }
     try {
-      const wiktionaryResult = await this.lookupWiktionary(cleanWord);
+      const wiktionaryResult = await this.lookupWiktionary(word);
       if (wiktionaryResult) return wiktionaryResult;
     } catch {
+    }
+    return null;
+  }
+  static extractInflectionInfo(result) {
+    if (!result.meanings || result.meanings.length === 0) return null;
+    for (const meaning of result.meanings) {
+      for (const defObj of meaning.definitions || []) {
+        const def = defObj.definition.trim();
+        const match = def.match(
+          /^(?:plural|third-person\s+singular(?:\s+simple\s+present)?|past\s+tense|past\s+participle|present\s+participle|comparative|superlative|alternative\s+(?:spelling|form))\s+of\s+(?:the\s+)?(?:word\s+)?["'“]?([a-zA-Z\p{L}'-]+)["'”]?\.?$/iu
+        );
+        if (match && match[1]) {
+          return {
+            root: match[1].toLowerCase().trim(),
+            note: def
+          };
+        }
+      }
+    }
+    return null;
+  }
+  static guessBaseWord(word) {
+    const lower = word.toLowerCase();
+    if (lower.length <= 3) return null;
+    if (lower.endsWith("ies") && lower.length > 4) {
+      return lower.slice(0, -3) + "y";
+    }
+    if (lower.endsWith("es") && lower.length > 4) {
+      return lower.slice(0, -2);
+    }
+    if (lower.endsWith("s") && !lower.endsWith("ss") && lower.length > 3) {
+      return lower.slice(0, -1);
+    }
+    if (lower.endsWith("ed") && lower.length > 4) {
+      return lower.slice(0, -2);
+    }
+    if (lower.endsWith("ing") && lower.length > 5) {
+      return lower.slice(0, -3);
     }
     return null;
   }
@@ -755,7 +861,13 @@ var DictionaryService = class {
           const defs = (sec.definitions || []).map((d) => {
             const rawDef = typeof d.definition === "string" ? d.definition : "";
             const cleanDef = rawDef.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-            return cleanDef ? { definition: cleanDef } : null;
+            let example;
+            if (Array.isArray(d.examples) && d.examples.length > 0) {
+              const rawEx = typeof d.examples[0] === "string" ? d.examples[0] : "";
+              const cleanEx = rawEx.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+              if (cleanEx) example = cleanEx;
+            }
+            return cleanDef ? { definition: cleanDef, example } : null;
           }).filter(Boolean);
           if (defs.length > 0) {
             meanings.push({
@@ -856,12 +968,13 @@ DictionaryService.cachedAudios = /* @__PURE__ */ new Map();
 var DefinitionModal = class {
   constructor() {
     this.el = null;
-    this.mousedownHandler = null;
+    this.outsidePointerHandler = null;
     this.keydownHandler = null;
   }
-  async show(coords, rawWord) {
+  async show(targetOrOptions, legacyWord) {
     this.hide();
-    const cleanWord = rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    const options = typeof targetOrOptions.rawWord === "string" ? targetOrOptions : { coords: targetOrOptions, rawWord: legacyWord || "" };
+    const cleanWord = options.rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     if (!cleanWord) return;
     this.el = document.createElement("div");
     this.el.className = "rc-popover rc-definition-popover";
@@ -871,13 +984,55 @@ var DefinitionModal = class {
     title.className = "rc-popover-title lowercase";
     title.textContent = cleanWord.toLowerCase();
     header.appendChild(title);
+    const headerActions = document.createElement("div");
+    headerActions.className = "rc-header-actions";
+    let vocabBtn = null;
+    let isSaved = false;
+    let cachedResult = null;
+    if (options.enableVocabulary && options.onSaveVocabulary) {
+      vocabBtn = document.createElement("button");
+      vocabBtn.type = "button";
+      vocabBtn.className = "rc-circle-btn rc-vocab-save-btn";
+      vocabBtn.title = "Save to Vocabulary";
+      vocabBtn.innerHTML = ICONS.bookmark;
+      if (options.isWordSaved) {
+        options.isWordSaved(cleanWord).then((saved) => {
+          if (saved && vocabBtn) {
+            isSaved = true;
+            vocabBtn.classList.add("saved");
+            vocabBtn.title = "Saved in Vocabulary";
+            vocabBtn.innerHTML = ICONS.bookmarkCheck;
+          }
+        });
+      }
+      vocabBtn.addEventListener("click", async () => {
+        if (isSaved) {
+          new import_obsidian3.Notice(`"${cleanWord}" is already saved in Vocabulary.`);
+          return;
+        }
+        const res = await options.onSaveVocabulary(
+          cachedResult || { word: cleanWord, meanings: [] },
+          options.contextSentence
+        );
+        if (res.success || res.alreadyExists) {
+          isSaved = true;
+          if (vocabBtn) {
+            vocabBtn.classList.add("saved");
+            vocabBtn.title = "Saved in Vocabulary";
+            vocabBtn.innerHTML = ICONS.bookmarkCheck;
+          }
+        }
+      });
+      headerActions.appendChild(vocabBtn);
+    }
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "rc-circle-btn";
     closeBtn.title = "Close";
     closeBtn.innerHTML = ICONS.close;
     closeBtn.addEventListener("click", () => this.hide());
-    header.appendChild(closeBtn);
+    headerActions.appendChild(closeBtn);
+    header.appendChild(headerActions);
     this.el.appendChild(header);
     const body = document.createElement("div");
     body.className = "rc-popover-body";
@@ -889,12 +1044,19 @@ var DefinitionModal = class {
     `;
     this.el.appendChild(body);
     document.body.appendChild(this.el);
-    this.position(coords);
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else {
+      this.position(options.coords);
+    }
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
     setTimeout(() => {
-      this.mousedownHandler = (e) => {
-        if (this.el && !this.el.contains(e.target)) {
+      this.outsidePointerHandler = (e) => {
+        const target = e instanceof MouseEvent ? e.target : e.touches?.[0]?.target || e.target;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -903,16 +1065,28 @@ var DefinitionModal = class {
           this.hide();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
     try {
       const result = await DictionaryService.lookup(cleanWord);
       if (!this.el) return;
       if (!result) {
         this.renderNotFound(body, cleanWord);
       } else {
+        cachedResult = result;
         this.renderResult(body, result);
+        if (options.enableVocabulary && options.autoSaveVocabulary && options.onSaveVocabulary && !isSaved) {
+          options.onSaveVocabulary(result, options.contextSentence).then((res) => {
+            if ((res.success || res.alreadyExists) && vocabBtn) {
+              isSaved = true;
+              vocabBtn.classList.add("saved");
+              vocabBtn.title = "Saved in Vocabulary";
+              vocabBtn.innerHTML = ICONS.bookmarkCheck;
+            }
+          });
+        }
       }
     } catch {
       if (!this.el) return;
@@ -965,6 +1139,12 @@ var DefinitionModal = class {
     });
     pronRow.appendChild(speakerBtn);
     body.appendChild(pronRow);
+    if (result.inflectionNote) {
+      const inflectDiv = document.createElement("div");
+      inflectDiv.className = "rc-inflection-tag";
+      inflectDiv.textContent = `(${result.inflectionNote})`;
+      body.appendChild(inflectDiv);
+    }
     if (result.meanings && result.meanings.length > 0) {
       for (const meaning of result.meanings) {
         const meaningBlock = document.createElement("div");
@@ -1030,9 +1210,10 @@ var DefinitionModal = class {
     `;
   }
   hide() {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);
@@ -1046,7 +1227,7 @@ var DefinitionModal = class {
 };
 
 // src/translator.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var SUPPORTED_LANGUAGES = [
   { code: "en", name: "English" },
   { code: "es", name: "Spanish" },
@@ -1092,7 +1273,7 @@ var TranslatorService = class {
   }
   static async translateWithCloudApi(text, targetLang, apiKey) {
     const url = `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`;
-    const response = await (0, import_obsidian3.requestUrl)({
+    const response = await (0, import_obsidian4.requestUrl)({
       url,
       method: "POST",
       headers: {
@@ -1118,7 +1299,7 @@ var TranslatorService = class {
       targetLang
     )}&dt=t&q=${encodeURIComponent(trimmed)}`;
     try {
-      const response = await (0, import_obsidian3.requestUrl)({
+      const response = await (0, import_obsidian4.requestUrl)({
         url,
         method: "GET"
       });
@@ -1180,7 +1361,7 @@ var TranslateModal = class {
     this.el = null;
     this.currentText = "";
     this.currentTargetLang = "en";
-    this.mousedownHandler = null;
+    this.outsidePointerHandler = null;
     this.keydownHandler = null;
   }
   async show(coords, text, defaultTargetLang = "en", apiKey) {
@@ -1225,12 +1406,19 @@ var TranslateModal = class {
     body.className = "rc-popover-body rc-translate-body";
     this.el.appendChild(body);
     document.body.appendChild(this.el);
-    this.position(coords);
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else {
+      this.position(coords);
+    }
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
     setTimeout(() => {
-      this.mousedownHandler = (e) => {
-        if (this.el && !this.el.contains(e.target)) {
+      this.outsidePointerHandler = (e) => {
+        const target = e instanceof MouseEvent ? e.target : e.touches?.[0]?.target || e.target;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -1239,9 +1427,10 @@ var TranslateModal = class {
           this.hide();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
     await this.runTranslation();
   }
   position(coords) {
@@ -1340,9 +1529,10 @@ var TranslateModal = class {
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
   }
   hide() {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);
@@ -1359,7 +1549,7 @@ var TranslateModal = class {
 var NoteModal = class {
   constructor() {
     this.el = null;
-    this.mousedownHandler = null;
+    this.outsidePointerHandler = null;
     this.keydownHandler = null;
   }
   show(options) {
@@ -1463,17 +1653,22 @@ var NoteModal = class {
     body.appendChild(footer);
     this.el.appendChild(body);
     document.body.appendChild(this.el);
-    if (options.coords) {
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else if (options.coords) {
       this.position(options.coords);
     } else {
       this.el.classList.add("centered");
     }
     textarea.focus();
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
     setTimeout(() => {
-      this.mousedownHandler = (e) => {
-        if (this.el && !this.el.contains(e.target)) {
+      this.outsidePointerHandler = (e) => {
+        const target = e instanceof MouseEvent ? e.target : e.touches?.[0]?.target || e.target;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -1485,9 +1680,10 @@ var NoteModal = class {
           doSave();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
   }
   position(coords) {
     if (!this.el) return;
@@ -1511,9 +1707,10 @@ var NoteModal = class {
     this.el.style.transform = transform;
   }
   hide() {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);
@@ -1527,9 +1724,9 @@ var NoteModal = class {
 };
 
 // src/ui/annotations-view.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var VIEW_TYPE_READER_COMPANION = "reader-companion-annotations-view";
-var ReaderCompanionView = class extends import_obsidian4.ItemView {
+var ReaderCompanionView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.filterColor = null;
@@ -1688,7 +1885,7 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
         }
         this.app.workspace.setActiveLeaf(leaf, { focus: true });
       } else {
-        new import_obsidian4.Notice(`Note "${item.fileTitle}" was not found in the vault.`);
+        new import_obsidian5.Notice(`Note "${item.fileTitle}" was not found in the vault.`);
       }
     });
     const menuBtn = topRow.createEl("button", {
@@ -1698,11 +1895,11 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
     menuBtn.innerHTML = ICONS.moreVertical;
     menuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const menu = new import_obsidian4.Menu();
+      const menu = new import_obsidian5.Menu();
       menu.addItem((itemMenu) => {
         itemMenu.setTitle("Copy text").setIcon("copy").onClick(() => {
           navigator.clipboard.writeText(item.text);
-          new import_obsidian4.Notice("Copied text to clipboard!");
+          new import_obsidian5.Notice("Copied text to clipboard!");
         });
       });
       menu.addItem((itemMenu) => {
@@ -1728,7 +1925,7 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
       menu.addItem((itemMenu) => {
         itemMenu.setTitle("Delete").setIcon("trash").setWarning(true).onClick(async () => {
           await this.plugin.storage.deleteAnnotation(item.id);
-          new import_obsidian4.Notice("Deleted highlight.");
+          new import_obsidian5.Notice("Deleted highlight.");
         });
       });
       menu.showAtMouseEvent(e);
@@ -1785,7 +1982,7 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
   async jumpToText(filePath, text, annotationId) {
     const file = await this.plugin.storage.resolveFile(filePath, void 0, text);
     if (!file) {
-      new import_obsidian4.Notice("Could not locate the note for this highlight in the vault.");
+      new import_obsidian5.Notice("Could not locate the note for this highlight in the vault.");
       return;
     }
     filePath = file.path;
@@ -1920,8 +2117,8 @@ var ReaderCompanionView = class extends import_obsidian4.ItemView {
 };
 
 // src/settings.ts
-var import_obsidian5 = require("obsidian");
-var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab {
+var import_obsidian6 = require("obsidian");
+var ReaderCompanionSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1934,7 +2131,7 @@ var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: "setting-item-description",
       text: "Customize popup triggers, translation target language, colors, and UI theme."
     });
-    new import_obsidian5.Setting(containerEl).setName("Default Highlight Color").setDesc("The default color chosen for quick highlighting.").addDropdown((drop) => {
+    new import_obsidian6.Setting(containerEl).setName("Default Highlight Color").setDesc("The default color chosen for quick highlighting.").addDropdown((drop) => {
       for (const col of HIGHLIGHT_COLORS) {
         drop.addOption(col.hex, col.name);
       }
@@ -1944,7 +2141,7 @@ var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab 
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Default Translation Language").setDesc("Target language used by the instant translator.").addDropdown((drop) => {
+    new import_obsidian6.Setting(containerEl).setName("Default Translation Language").setDesc("Target language used by the instant translator.").addDropdown((drop) => {
       for (const lang of SUPPORTED_LANGUAGES) {
         drop.addOption(lang.code, lang.name);
       }
@@ -1954,28 +2151,28 @@ var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab 
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Google Cloud Translation API Key (Optional)").setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.").addText((text) => {
+    new import_obsidian6.Setting(containerEl).setName("Google Cloud Translation API Key (Optional)").setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.").addText((text) => {
       text.setPlaceholder("Enter your API key...").setValue(this.plugin.settings.googleApiKey || "").onChange(async (val) => {
         this.plugin.settings.googleApiKey = val.trim();
         await this.plugin.savePluginData();
       });
       text.inputEl.type = "password";
     });
-    new import_obsidian5.Setting(containerEl).setName("Enable in Reading View").setDesc("Show selection popup menu when text is selected in Reading Mode.").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable in Reading View").setDesc("Show selection popup menu when text is selected in Reading Mode.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.enableInReadingMode);
       toggle.onChange(async (val) => {
         this.plugin.settings.enableInReadingMode = val;
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Enable in Editing / Live Preview Mode").setDesc("Show selection popup menu when text is selected in editing mode.").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable in Editing / Live Preview Mode").setDesc("Show selection popup menu when text is selected in editing mode.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.enableInEditingMode);
       toggle.onChange(async (val) => {
         this.plugin.settings.enableInEditingMode = val;
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Popup UI Theme").setDesc("Choose theme styling for the popup menus and modals.").addDropdown((drop) => {
+    new import_obsidian6.Setting(containerEl).setName("Popup UI Theme").setDesc("Choose theme styling for the popup menus and modals.").addDropdown((drop) => {
       drop.addOption("auto", "Auto (Match Obsidian)");
       drop.addOption("dark", "Dark");
       drop.addOption("light", "Light");
@@ -1987,29 +2184,236 @@ var ReaderCompanionSettingTab = class extends import_obsidian5.PluginSettingTab 
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Auto-pronounce on Definition").setDesc("Automatically play audio pronunciation when opening a definition popup.").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Auto-pronounce on Definition").setDesc("Automatically play audio pronunciation when opening a definition popup.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.autoPronounce);
       toggle.onChange(async (val) => {
         this.plugin.settings.autoPronounce = val;
         await this.plugin.savePluginData();
       });
     });
+    containerEl.createEl("h3", { text: "Vocabulary Tracking" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Save looked-up words, definitions, and sentence context into a dedicated file formatted for vocabulary tracking and flashcards (compatible with Goodreads Bookshelf)."
+    });
+    new import_obsidian6.Setting(containerEl).setName("Enable Vocabulary Tracking").setDesc("Enable vocabulary collection and saving.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.enableVocabulary !== false);
+      toggle.onChange(async (val) => {
+        this.plugin.settings.enableVocabulary = val;
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Auto-Save on Define").setDesc(
+      "Automatically save the word, definition, and sentence context to your vocabulary file whenever you click 'Define' (Kindle style). When disabled, an 'Add to vocabulary' option is displayed in the selection menu and definition popup."
+    ).addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.autoSaveVocabulary !== false);
+      toggle.onChange(async (val) => {
+        this.plugin.settings.autoSaveVocabulary = val;
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Vocabulary File Path").setDesc("Vault path to the markdown file where vocabulary entries are appended.").addText((text) => {
+      text.setPlaceholder("Vocabulary.md").setValue(this.plugin.settings.vocabularyFilePath || "Vocabulary.md").onChange(async (val) => {
+        this.plugin.settings.vocabularyFilePath = val.trim() || "Vocabulary.md";
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Vocabulary Heading Level").setDesc("Heading level used for each word in the vocabulary file.").addDropdown((drop) => {
+      drop.addOption("h2", "H2 (##)");
+      drop.addOption("h3", "H3 (###) \u2014 Default");
+      drop.addOption("h4", "H4 (####)");
+      drop.setValue(this.plugin.settings.vocabularyHeadingLevel || "h3");
+      drop.onChange(async (val) => {
+        this.plugin.settings.vocabularyHeadingLevel = val;
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Add Frontmatter Property to Vocabulary").setDesc("Include a frontmatter property in the vocabulary file (e.g. type: vocabulary) so flashcards or queries can find all vocabulary.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.addVocabularyProperty !== false);
+      toggle.onChange(async (val) => {
+        this.plugin.settings.addVocabularyProperty = val;
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Vocabulary Property Key").setDesc("YAML frontmatter key name for identifying the vocabulary file.").addText((text) => {
+      text.setPlaceholder("type").setValue(this.plugin.settings.vocabularyPropertyKey || "type").onChange(async (val) => {
+        this.plugin.settings.vocabularyPropertyKey = val.trim() || "type";
+        await this.plugin.savePluginData();
+      });
+    });
+    new import_obsidian6.Setting(containerEl).setName("Vocabulary Property Value").setDesc("YAML frontmatter value for identifying the vocabulary file.").addText((text) => {
+      text.setPlaceholder("vocabulary").setValue(this.plugin.settings.vocabularyPropertyValue || "vocabulary").onChange(async (val) => {
+        this.plugin.settings.vocabularyPropertyValue = val.trim() || "vocabulary";
+        await this.plugin.savePluginData();
+      });
+    });
     containerEl.createEl("h3", { text: "Data & Storage Persistence" });
-    new import_obsidian5.Setting(containerEl).setName("Vault Storage (.reader-companion/annotations.json)").setDesc(
+    new import_obsidian6.Setting(containerEl).setName("Vault Storage (.reader-companion/annotations.json)").setDesc(
       "All highlights and notes are safely saved in your vault root (.reader-companion/annotations.json). Your data survives plugin uninstalls and syncs across devices via Obsidian Sync, Git, or iCloud."
     ).addButton((btn) => {
       btn.setButtonText("Reload from Vault");
       btn.setTooltip("Re-read annotations from .reader-companion/annotations.json");
       btn.onClick(async () => {
         await this.plugin.reloadVaultAnnotations();
-        new import_obsidian5.Notice("Annotations reloaded from vault storage!");
+        new import_obsidian6.Notice("Annotations reloaded from vault storage!");
       });
     });
   }
 };
 
+// src/vocabulary.ts
+var import_obsidian7 = require("obsidian");
+var VocabularyService = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.app = plugin.app;
+  }
+  getHeadingPrefix(level) {
+    switch (level) {
+      case "h1":
+        return "#";
+      case "h2":
+        return "##";
+      case "h4":
+        return "####";
+      case "h3":
+      default:
+        return "###";
+    }
+  }
+  async isWordSaved(rawWord) {
+    const cleanWord = rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    if (!cleanWord) return false;
+    const filePath = (0, import_obsidian7.normalizePath)(this.plugin.settings.vocabularyFilePath || "Vocabulary.md");
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (!(file instanceof import_obsidian7.TFile)) {
+      return false;
+    }
+    try {
+      const content = await this.app.vault.read(file);
+      const escapedWord = cleanWord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const wordRegex = new RegExp(`^#{1,6}\\s+${escapedWord}\\s*$`, "im");
+      return wordRegex.test(content);
+    } catch {
+      return false;
+    }
+  }
+  async saveWord(options) {
+    const { word, contextSentence, sourceTitle, sourcePath, silent } = options;
+    const cleanWord = word.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    if (!cleanWord) {
+      return { success: false, alreadyExists: false };
+    }
+    const file = await this.ensureVocabularyFile();
+    if (!file) {
+      if (!silent) new import_obsidian7.Notice("Reader Companion: Could not access vocabulary file.");
+      return { success: false, alreadyExists: false };
+    }
+    const content = await this.app.vault.read(file);
+    const escapedWord = cleanWord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const wordRegex = new RegExp(`^#{1,6}\\s+${escapedWord}\\s*$`, "im");
+    if (wordRegex.test(content)) {
+      if (!silent) {
+        new import_obsidian7.Notice(`"${cleanWord}" is already in your vocabulary.`);
+      }
+      return { success: false, alreadyExists: true };
+    }
+    await this.ensureFrontmatterProperty(file);
+    let defResult = options.definitionResult;
+    if (!defResult) {
+      try {
+        defResult = await DictionaryService.lookup(cleanWord);
+      } catch {
+      }
+    }
+    const entryMarkdown = this.formatWordEntry(cleanWord, defResult, contextSentence, sourceTitle, sourcePath);
+    const currentContent = await this.app.vault.read(file);
+    const trimmed = currentContent.trimEnd();
+    const separator = trimmed ? "\n\n" : "";
+    const newContent = `${trimmed}${separator}${entryMarkdown}
+`;
+    await this.app.vault.modify(file, newContent);
+    if (!silent) {
+      new import_obsidian7.Notice(`Saved "${cleanWord}" to Vocabulary!`);
+    }
+    return { success: true, alreadyExists: false };
+  }
+  formatWordEntry(cleanWord, defResult, contextSentence, sourceTitle, sourcePath) {
+    const h = this.getHeadingPrefix(this.plugin.settings.vocabularyHeadingLevel || "h3");
+    const capitalizedWord = cleanWord.charAt(0).toUpperCase() + cleanWord.slice(1);
+    const lines = [`${h} ${capitalizedWord}`];
+    if (defResult?.meanings && defResult.meanings.length > 0) {
+      const inflectionPrefix = defResult.inflectionNote ? ` *(${defResult.inflectionNote})*` : "";
+      lines.push(`- **Definition**:${inflectionPrefix}`);
+      for (const m of defResult.meanings) {
+        const posName = m.partOfSpeech ? m.partOfSpeech.charAt(0).toUpperCase() + m.partOfSpeech.slice(1) : "General";
+        lines.push(`  - **${posName}**:`);
+        (m.definitions || []).forEach((d, idx) => {
+          lines.push(`    ${idx + 1}. ${d.definition.trim()}`);
+          if (d.example && d.example.trim()) {
+            lines.push(`       - *e.g.* \u201C${d.example.trim().replace(/^["“]+|["”]+$/g, "")}\u201D`);
+          }
+        });
+      }
+    } else {
+      lines.push(`- **Definition**: No definition found.`);
+    }
+    lines.push(
+      `- **Source Context**: "${contextSentence ? contextSentence.trim().replace(/^["“]+|["”]+$/g, "") : ""}"`
+    );
+    lines.push(`- **My Examples**:`);
+    lines.push(`  1. `);
+    if (sourceTitle) {
+      lines.push(`- **Source**: [[${sourceTitle}]]`);
+    }
+    return lines.join("\n");
+  }
+  async ensureVocabularyFile() {
+    const rawPath = this.plugin.settings.vocabularyFilePath || "Vocabulary.md";
+    const filePath = (0, import_obsidian7.normalizePath)(rawPath);
+    const existing = this.app.vault.getAbstractFileByPath(filePath);
+    if (existing instanceof import_obsidian7.TFile) {
+      return existing;
+    }
+    const lastSlash = filePath.lastIndexOf("/");
+    if (lastSlash > 0) {
+      const folderPath = filePath.substring(0, lastSlash);
+      const folder = this.app.vault.getAbstractFileByPath(folderPath);
+      if (!folder) {
+        await this.app.vault.createFolder(folderPath);
+      }
+    }
+    const initialLines = [];
+    if (this.plugin.settings.addVocabularyProperty) {
+      const key = (this.plugin.settings.vocabularyPropertyKey || "type").trim();
+      const val = (this.plugin.settings.vocabularyPropertyValue || "vocabulary").trim();
+      initialLines.push("---");
+      if (key) {
+        initialLines.push(`${key}: ${val}`);
+      }
+      initialLines.push("tags:", "  - book/vocabulary", "---", "");
+    }
+    return await this.app.vault.create(filePath, initialLines.join("\n"));
+  }
+  async ensureFrontmatterProperty(file) {
+    if (!this.plugin.settings.addVocabularyProperty) return;
+    const key = (this.plugin.settings.vocabularyPropertyKey || "type").trim();
+    const val = (this.plugin.settings.vocabularyPropertyValue || "vocabulary").trim();
+    if (!key) return;
+    try {
+      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+        if (!frontmatter[key]) {
+          frontmatter[key] = val;
+        }
+      });
+    } catch (e) {
+      console.warn("Reader Companion: Could not update frontmatter property", e);
+    }
+  }
+};
+
 // src/main.ts
-var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
+var ReaderCompanionPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.data = {
@@ -2019,6 +2423,9 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     };
     this.settings = { ...DEFAULT_SETTINGS };
     this.isMouseSelecting = false;
+    this.isTouchSelecting = false;
+    this.selectionDebounceTimer = null;
+    this.lastTouchCoords = null;
     this.VAULT_STORAGE_DIR = ".reader-companion";
     this.VAULT_STORAGE_FILE = ".reader-companion/annotations.json";
   }
@@ -2026,6 +2433,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     await this.loadPluginData();
     this.storage = new StorageManager(this);
     this.highlighter = new DomHighlighter(this);
+    this.vocabulary = new VocabularyService(this);
     this.definitionModal = new DefinitionModal();
     this.translateModal = new TranslateModal();
     this.noteModal = new NoteModal();
@@ -2034,13 +2442,15 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       onCopy: (text) => this.handleCopy(text),
       onTranslate: (text, coords) => this.handleTranslate(text, coords),
       onDefine: (word, coords) => this.handleDefine(word, coords),
+      onAddToVocabulary: (word, coords) => this.handleAddToVocabulary(word, coords),
+      shouldShowAddToVocabulary: () => this.settings.enableVocabulary && !this.settings.autoSaveVocabulary,
       onSearchVault: (text) => this.handleSearchVault(text),
       onHighlight: (text, color, existingId) => this.handleQuickHighlight(text, color, existingId),
       onDeleteHighlight: async (id) => {
         const activeFile = this.app.workspace.getActiveFile();
         await this.storage.deleteAnnotation(id);
         if (activeFile) this.reapplyHighlightsForFile(activeFile.path);
-        new import_obsidian6.Notice("Highlight removed.");
+        new import_obsidian8.Notice("Highlight removed.");
       },
       onClose: () => {
       }
@@ -2066,7 +2476,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     });
     this.registerEvent(
       this.app.vault.on("rename", async (file, oldPath) => {
-        const newTitle = file instanceof import_obsidian6.TFile ? file.basename : void 0;
+        const newTitle = file instanceof import_obsidian8.TFile ? file.basename : void 0;
         const changed = await this.storage.handleRename(oldPath, file.path, newTitle);
         if (changed) {
           this.reapplyHighlightsForFile(file.path);
@@ -2103,15 +2513,64 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       callback: () => this.activateView()
     });
     this.addCommand({
+      id: "show-selection-menu",
+      name: "Show Reader Companion Menu for Selection",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+        if (!activeView) return;
+        const selection = window.getSelection();
+        let text = selection?.toString().trim();
+        if (!text && activeView.getMode() === "source") {
+          try {
+            text = activeView.editor.getSelection().trim();
+          } catch {
+          }
+        }
+        if (text && text.length >= this.settings.minSelectionLength) {
+          const coords = this.getSelectionCoordinates();
+          this.handleSelectionEvent();
+        } else {
+          new import_obsidian8.Notice("Please select text first.");
+        }
+      }
+    });
+    this.addCommand({
       id: "define-selected-word",
       name: "Define Selected Word",
       callback: () => {
-        const selection = window.getSelection()?.toString().trim();
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+          }
+        }
         if (selection) {
           const coords = this.getSelectionCoordinates();
-          this.definitionModal.show(coords, selection);
+          this.handleDefine(selection, coords);
         } else {
-          new import_obsidian6.Notice("Please select a word to define.");
+          new import_obsidian8.Notice("Please select a word to define.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "add-selected-word-to-vocabulary",
+      name: "Add Selected Word to Vocabulary",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+          }
+        }
+        if (selection) {
+          const coords = this.getSelectionCoordinates();
+          this.handleAddToVocabulary(selection, coords);
+        } else {
+          new import_obsidian8.Notice("Please select a word to add to vocabulary.");
         }
       }
     });
@@ -2119,12 +2578,19 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       id: "translate-selected-text",
       name: "Translate Selected Text",
       callback: () => {
-        const selection = window.getSelection()?.toString().trim();
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+          }
+        }
         if (selection) {
           const coords = this.getSelectionCoordinates();
           this.translateModal.show(coords, selection, this.settings.targetLanguage);
         } else {
-          new import_obsidian6.Notice("Please select text to translate.");
+          new import_obsidian8.Notice("Please select text to translate.");
         }
       }
     });
@@ -2133,7 +2599,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       name: "Reload Annotations from Vault (.reader-companion)",
       callback: async () => {
         await this.reloadVaultAnnotations();
-        new import_obsidian6.Notice("Annotations reloaded from vault storage!");
+        new import_obsidian8.Notice("Annotations reloaded from vault storage!");
       }
     });
     this.addCommand({
@@ -2142,15 +2608,19 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       callback: async () => {
         const healed = await this.storage.reconcileAnnotations();
         if (healed > 0) {
-          new import_obsidian6.Notice(`Reader Companion: Reconciled ${healed} note(s)!`);
+          new import_obsidian8.Notice(`Reader Companion: Reconciled ${healed} note(s)!`);
         } else {
-          new import_obsidian6.Notice("Reader Companion: All annotation locations are up to date.");
+          new import_obsidian8.Notice("Reader Companion: All annotation locations are up to date.");
         }
       }
     });
     this.updateThemeClass();
   }
   onunload() {
+    if (this.selectionDebounceTimer !== null) {
+      window.clearTimeout(this.selectionDebounceTimer);
+      this.selectionDebounceTimer = null;
+    }
     this.selectionMenu.hide();
     this.definitionModal.hide();
     this.translateModal.hide();
@@ -2267,13 +2737,83 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal, .rc-sidebar-actions")) {
         return;
       }
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.handleSelectionEvent(e);
       }, 30);
     });
+    this.registerDomEvent(
+      document,
+      "touchstart",
+      (e) => {
+        const target = e.target;
+        if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal")) {
+          return;
+        }
+        this.isTouchSelecting = true;
+        if (e.touches && e.touches.length > 0) {
+          this.lastTouchCoords = {
+            x: e.touches[0].clientX,
+            y: e.touches[0].clientY
+          };
+        }
+      },
+      { passive: true }
+    );
+    this.registerDomEvent(
+      document,
+      "touchmove",
+      (e) => {
+        if (e.touches && e.touches.length > 0) {
+          this.lastTouchCoords = {
+            x: e.touches[0].clientX,
+            y: e.touches[0].clientY
+          };
+        }
+      },
+      { passive: true }
+    );
+    this.registerDomEvent(document, "touchend", (e) => {
+      if (!this.isTouchSelecting) return;
+      this.isTouchSelecting = false;
+      const target = e.target;
+      if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal, .rc-sidebar-actions")) {
+        return;
+      }
+      window.setTimeout(() => {
+        this.handleSelectionEvent(e);
+      }, 120);
+    });
+    this.registerDomEvent(document, "touchcancel", () => {
+      this.isTouchSelecting = false;
+    });
+    this.registerDomEvent(document, "selectionchange", () => {
+      if (this.selectionDebounceTimer !== null) {
+        window.clearTimeout(this.selectionDebounceTimer);
+      }
+      this.selectionDebounceTimer = window.setTimeout(() => {
+        this.selectionDebounceTimer = null;
+        if (this.isMouseSelecting || this.isTouchSelecting) {
+          return;
+        }
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed) {
+          if (this.selectionMenu.isOpen()) {
+            const activeEl = document.activeElement;
+            if (!activeEl?.closest(".rc-selection-menu, .rc-popover, .rc-modal")) {
+              this.selectionMenu.hide();
+            }
+          }
+          return;
+        }
+        const text = selection.toString().trim();
+        if (text.length >= this.settings.minSelectionLength) {
+          this.handleSelectionEvent();
+        }
+      }, 180);
+    });
   }
   handleSelectionEvent(e) {
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
     if (!activeView) return;
     const currentMode = activeView.getMode();
     const isReadingMode = currentMode === "preview";
@@ -2281,21 +2821,26 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     if (isReadingMode && !this.settings.enableInReadingMode) return;
     if (isEditingMode && !this.settings.enableInEditingMode) return;
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) {
+    let text = selection?.toString().trim() || "";
+    if (!text && isEditingMode) {
+      try {
+        text = activeView.editor.getSelection().trim();
+      } catch {
+      }
+    }
+    if (!text || text.length < this.settings.minSelectionLength) {
       return;
     }
-    const text = selection.toString().trim();
-    if (text.length < this.settings.minSelectionLength) {
+    const anchorNode = selection?.anchorNode;
+    const anchorEl = anchorNode?.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode?.parentElement;
+    const isInsideActiveView = Boolean(anchorNode && activeView.contentEl.contains(anchorNode)) || Boolean(anchorEl && anchorEl.closest(".markdown-preview-view, .markdown-rendered, .cm-editor, .markdown-reading-view, .markdown-source-view")) || Boolean(activeView.containerEl.contains(document.activeElement));
+    if (!isInsideActiveView) return;
+    if (anchorEl?.closest(".view-header, .rc-selection-menu, .rc-popover, .rc-modal, .workspace-ribbon, .rc-sidebar-actions")) {
       return;
     }
-    const anchorNode = selection.anchorNode;
-    const container = anchorNode?.parentElement?.closest(
-      ".markdown-preview-view, .markdown-rendered, .cm-editor"
-    );
-    if (!container) return;
     const activeFile = this.app.workspace.getActiveFile();
     let existing;
-    const markEl = anchorNode?.parentElement?.closest("mark.rc-inline-highlight") || selection.focusNode?.parentElement?.closest("mark.rc-inline-highlight");
+    const markEl = anchorNode?.parentElement?.closest("mark.rc-inline-highlight") || selection?.focusNode?.parentElement?.closest("mark.rc-inline-highlight");
     if (markEl?.dataset.rcId) {
       existing = this.storage.getAnnotationById(markEl.dataset.rcId);
     }
@@ -2317,11 +2862,59 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
           bottomY: Math.round(rect.bottom)
         };
       }
+      const clientRects = range.getClientRects();
+      if (clientRects.length > 0) {
+        const first = clientRects[0];
+        const last = clientRects[clientRects.length - 1];
+        return {
+          x: Math.round(first.left + first.width / 2),
+          y: Math.round(first.top),
+          bottomY: Math.round(last.bottom)
+        };
+      }
     }
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+    if (activeView && activeView.getMode() === "source") {
+      try {
+        const editor = activeView.editor;
+        const cursor = editor.getCursor("head");
+        if (typeof editor.coordsAtPos === "function" && typeof editor.posToOffset === "function") {
+          const coords = editor.coordsAtPos(editor.posToOffset(cursor));
+          if (coords && coords.left && coords.top) {
+            return {
+              x: Math.round(coords.left),
+              y: Math.round(coords.top),
+              bottomY: Math.round(coords.bottom || coords.top + 20)
+            };
+          }
+        }
+      } catch {
+      }
+    }
+    let clientX;
+    let clientY;
+    if (e) {
+      if ("touches" in e && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else if ("changedTouches" in e && e.changedTouches.length > 0) {
+        clientX = e.changedTouches[0].clientX;
+        clientY = e.changedTouches[0].clientY;
+      } else if ("clientX" in e) {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+    }
+    if (clientX === void 0 && this.lastTouchCoords) {
+      clientX = this.lastTouchCoords.x;
+      clientY = this.lastTouchCoords.y;
+    }
+    const fallbackX = clientX ?? Math.round(window.innerWidth / 2);
+    const fallbackY = clientY ?? Math.round(window.innerHeight / 2);
     return {
-      x: e?.clientX ?? Math.round(window.innerWidth / 2),
-      y: e?.clientY ?? Math.round(window.innerHeight / 2),
-      bottomY: (e?.clientY ?? Math.round(window.innerHeight / 2)) + 20
+      x: fallbackX,
+      y: fallbackY,
+      bottomY: fallbackY + 24
     };
   }
   // Action handlers
@@ -2335,7 +2928,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     if (existing) {
       await this.storage.updateAnnotation(existing.id, { color });
       this.reapplyHighlightsForFile(activeFile.path);
-      new import_obsidian6.Notice("Highlight color updated!");
+      new import_obsidian8.Notice("Highlight color updated!");
       return;
     }
     await this.storage.addAnnotation({
@@ -2345,7 +2938,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
       color
     });
     this.reapplyHighlightsForFile(activeFile.path);
-    new import_obsidian6.Notice("Highlighted text!");
+    new import_obsidian8.Notice("Highlighted text!");
   }
   handleAddNote(text, coords, existingItem) {
     const activeFile = this.app.workspace.getActiveFile();
@@ -2364,12 +2957,12 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
             color
           });
           if (activeFile) this.reapplyHighlightsForFile(activeFile.path);
-          new import_obsidian6.Notice("Note updated!");
+          new import_obsidian8.Notice("Note updated!");
         },
         onDelete: async () => {
           await this.storage.deleteAnnotation(existing.id);
           if (activeFile) this.reapplyHighlightsForFile(activeFile.path);
-          new import_obsidian6.Notice("Highlight deleted.");
+          new import_obsidian8.Notice("Highlight deleted.");
         },
         onViewInPanel: () => this.activateView()
       });
@@ -2390,14 +2983,14 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
           note
         });
         this.reapplyHighlightsForFile(activeFile.path);
-        new import_obsidian6.Notice("Note saved!");
+        new import_obsidian8.Notice("Note saved!");
       },
       onViewInPanel: () => this.activateView()
     });
   }
   handleCopy(text) {
     navigator.clipboard.writeText(text);
-    new import_obsidian6.Notice("Copied to clipboard!");
+    new import_obsidian8.Notice("Copied to clipboard!");
   }
   handleTranslate(text, coords) {
     const targetCoords = coords || this.getSelectionCoordinates();
@@ -2410,14 +3003,83 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
   }
   handleDefine(word, coords) {
     const targetCoords = coords || this.getSelectionCoordinates();
-    this.definitionModal.show(targetCoords, word);
+    const activeFile = this.app.workspace.getActiveFile();
+    const contextSentence = this.extractContextFromSelection(word);
+    this.definitionModal.show({
+      coords: targetCoords,
+      rawWord: word,
+      contextSentence,
+      sourceTitle: activeFile?.basename,
+      sourcePath: activeFile?.path,
+      enableVocabulary: this.settings.enableVocabulary,
+      autoSaveVocabulary: this.settings.autoSaveVocabulary,
+      onSaveVocabulary: async (defResult, ctx) => {
+        return await this.vocabulary.saveWord({
+          word,
+          definitionResult: defResult,
+          contextSentence: ctx || contextSentence,
+          sourceTitle: activeFile?.basename,
+          sourcePath: activeFile?.path
+        });
+      },
+      isWordSaved: (w) => this.vocabulary.isWordSaved(w)
+    });
+  }
+  async handleAddToVocabulary(word, coords) {
+    const activeFile = this.app.workspace.getActiveFile();
+    const contextSentence = this.extractContextFromSelection(word);
+    await this.vocabulary.saveWord({
+      word,
+      contextSentence,
+      sourceTitle: activeFile?.basename,
+      sourcePath: activeFile?.path
+    });
+  }
+  extractContextFromSelection(selectionText) {
+    const cleanWord = selectionText.trim();
+    if (!cleanWord) return "";
+    const selection = window.getSelection();
+    if (selection && selection.anchorNode) {
+      const parent = selection.anchorNode.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode.parentElement;
+      const blockEl = parent?.closest("p, li, blockquote, div.cm-line, h1, h2, h3, h4, h5, h6");
+      const fullText = (blockEl ? blockEl.textContent : parent?.textContent) || "";
+      if (fullText) {
+        const sentence = this.extractSentenceContainingWord(fullText, cleanWord);
+        if (sentence) return sentence;
+      }
+    }
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+    if (activeView && activeView.getMode() === "source") {
+      try {
+        const editor = activeView.editor;
+        const cursor = editor.getCursor();
+        const lineText = editor.getLine(cursor.line);
+        const sentence = this.extractSentenceContainingWord(lineText, cleanWord);
+        if (sentence) return sentence;
+        if (lineText.trim()) return lineText.trim();
+      } catch {
+      }
+    }
+    return "";
+  }
+  extractSentenceContainingWord(fullText, word) {
+    if (!fullText || !word) return "";
+    const cleanFull = fullText.replace(/\s+/g, " ").trim();
+    const sentences = cleanFull.split(/(?<=[.?!])\s+/);
+    const lowerWord = word.toLowerCase();
+    for (const s of sentences) {
+      if (s.toLowerCase().includes(lowerWord)) {
+        return s.trim();
+      }
+    }
+    return cleanFull.length > 200 ? cleanFull.slice(0, 200) + "..." : cleanFull;
   }
   handleSearchVault(text) {
     const searchPlugin = this.app.internalPlugins?.getPluginById("global-search");
     if (searchPlugin && searchPlugin.instance) {
       searchPlugin.instance.openGlobalSearch(text);
     } else {
-      new import_obsidian6.Notice(`Search query: ${text}`);
+      new import_obsidian8.Notice(`Search query: ${text}`);
     }
   }
   openNoteModal(options) {
@@ -2431,7 +3093,7 @@ var ReaderCompanionPlugin = class extends import_obsidian6.Plugin {
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     for (const leaf of leaves) {
       const view = leaf.view;
-      if (view instanceof import_obsidian6.MarkdownView && view.file?.path === filePath) {
+      if (view instanceof import_obsidian8.MarkdownView && view.file?.path === filePath) {
         const previewEl = view.previewMode?.containerEl || view.contentEl;
         if (previewEl) {
           const renderedSections = previewEl.querySelectorAll(".markdown-rendered");

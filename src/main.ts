@@ -13,6 +13,7 @@ import { TranslateModal } from "./ui/translate-modal";
 import { NoteModal, NoteModalOptions } from "./ui/note-modal";
 import { ReaderCompanionView, VIEW_TYPE_READER_COMPANION } from "./ui/annotations-view";
 import { ReaderCompanionSettingTab } from "./settings";
+import { VocabularyService } from "./vocabulary";
 
 export default class ReaderCompanionPlugin extends Plugin {
   data: ReaderCompanionData = {
@@ -25,6 +26,7 @@ export default class ReaderCompanionPlugin extends Plugin {
 
   storage!: StorageManager;
   highlighter!: DomHighlighter;
+  vocabulary!: VocabularyService;
 
   private selectionMenu!: SelectionMenu;
   private definitionModal!: DefinitionModal;
@@ -32,12 +34,16 @@ export default class ReaderCompanionPlugin extends Plugin {
   private noteModal!: NoteModal;
 
   private isMouseSelecting: boolean = false;
+  private isTouchSelecting: boolean = false;
+  private selectionDebounceTimer: number | null = null;
+  private lastTouchCoords: { x: number; y: number } | null = null;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
 
     this.storage = new StorageManager(this);
     this.highlighter = new DomHighlighter(this);
+    this.vocabulary = new VocabularyService(this);
 
     // Initialize UI popups
     this.definitionModal = new DefinitionModal();
@@ -49,6 +55,8 @@ export default class ReaderCompanionPlugin extends Plugin {
       onCopy: (text) => this.handleCopy(text),
       onTranslate: (text, coords) => this.handleTranslate(text, coords),
       onDefine: (word, coords) => this.handleDefine(word, coords),
+      onAddToVocabulary: (word, coords) => this.handleAddToVocabulary(word, coords),
+      shouldShowAddToVocabulary: () => this.settings.enableVocabulary && !this.settings.autoSaveVocabulary,
       onSearchVault: (text) => this.handleSearchVault(text),
       onHighlight: (text, color, existingId) => this.handleQuickHighlight(text, color, existingId),
       onDeleteHighlight: async (id) => {
@@ -140,15 +148,69 @@ export default class ReaderCompanionPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "show-selection-menu",
+      name: "Show Reader Companion Menu for Selection",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeView) return;
+        const selection = window.getSelection();
+        let text = selection?.toString().trim();
+        if (!text && activeView.getMode() === "source") {
+          try {
+            text = activeView.editor.getSelection().trim();
+          } catch {
+            // ignore
+          }
+        }
+        if (text && text.length >= this.settings.minSelectionLength) {
+          const coords = this.getSelectionCoordinates();
+          this.handleSelectionEvent();
+        } else {
+          new Notice("Please select text first.");
+        }
+      }
+    });
+
+    this.addCommand({
       id: "define-selected-word",
       name: "Define Selected Word",
       callback: () => {
-        const selection = window.getSelection()?.toString().trim();
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+            // ignore
+          }
+        }
         if (selection) {
           const coords = this.getSelectionCoordinates();
-          this.definitionModal.show(coords, selection);
+          this.handleDefine(selection, coords);
         } else {
           new Notice("Please select a word to define.");
+        }
+      }
+    });
+
+    this.addCommand({
+      id: "add-selected-word-to-vocabulary",
+      name: "Add Selected Word to Vocabulary",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+            // ignore
+          }
+        }
+        if (selection) {
+          const coords = this.getSelectionCoordinates();
+          this.handleAddToVocabulary(selection, coords);
+        } else {
+          new Notice("Please select a word to add to vocabulary.");
         }
       }
     });
@@ -157,7 +219,15 @@ export default class ReaderCompanionPlugin extends Plugin {
       id: "translate-selected-text",
       name: "Translate Selected Text",
       callback: () => {
-        const selection = window.getSelection()?.toString().trim();
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        let selection = window.getSelection()?.toString().trim();
+        if (!selection && activeView && activeView.getMode() === "source") {
+          try {
+            selection = activeView.editor.getSelection().trim();
+          } catch {
+            // ignore
+          }
+        }
         if (selection) {
           const coords = this.getSelectionCoordinates();
           this.translateModal.show(coords, selection, this.settings.targetLanguage);
@@ -193,6 +263,10 @@ export default class ReaderCompanionPlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.selectionDebounceTimer !== null) {
+      window.clearTimeout(this.selectionDebounceTimer);
+      this.selectionDebounceTimer = null;
+    }
     this.selectionMenu.hide();
     this.definitionModal.hide();
     this.translateModal.hide();
@@ -311,8 +385,8 @@ export default class ReaderCompanionPlugin extends Plugin {
   }
 
   private registerDomEvents(): void {
+    // 1. Mouse events (Desktop)
     this.registerDomEvent(document, "mousedown", (e: MouseEvent) => {
-      // If clicking inside active popovers, don't trigger new selection logic
       const target = e.target as HTMLElement;
       if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal")) {
         return;
@@ -324,19 +398,104 @@ export default class ReaderCompanionPlugin extends Plugin {
       if (!this.isMouseSelecting) return;
       this.isMouseSelecting = false;
 
-      // Check if mouse released inside our UI
       const target = e.target as HTMLElement;
       if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal, .rc-sidebar-actions")) {
         return;
       }
 
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.handleSelectionEvent(e);
       }, 30);
     });
+
+    // 2. Touch events (Mobile / Tablet / Touchscreen)
+    this.registerDomEvent(
+      document,
+      "touchstart",
+      (e: TouchEvent) => {
+        const target = e.target as HTMLElement;
+        if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal")) {
+          return;
+        }
+        this.isTouchSelecting = true;
+        if (e.touches && e.touches.length > 0) {
+          this.lastTouchCoords = {
+            x: e.touches[0].clientX,
+            y: e.touches[0].clientY
+          };
+        }
+      },
+      { passive: true }
+    );
+
+    this.registerDomEvent(
+      document,
+      "touchmove",
+      (e: TouchEvent) => {
+        if (e.touches && e.touches.length > 0) {
+          this.lastTouchCoords = {
+            x: e.touches[0].clientX,
+            y: e.touches[0].clientY
+          };
+        }
+      },
+      { passive: true }
+    );
+
+    this.registerDomEvent(document, "touchend", (e: TouchEvent) => {
+      if (!this.isTouchSelecting) return;
+      this.isTouchSelecting = false;
+
+      const target = e.target as HTMLElement;
+      if (target.closest(".rc-selection-menu, .rc-popover, .rc-modal, .rc-sidebar-actions")) {
+        return;
+      }
+
+      // Allow mobile OS / webview to finalize selection handles and ranges
+      window.setTimeout(() => {
+        this.handleSelectionEvent(e);
+      }, 120);
+    });
+
+    this.registerDomEvent(document, "touchcancel", () => {
+      this.isTouchSelecting = false;
+    });
+
+    // 3. Selection change event (Handles mobile long-press selection, selection handles drag, select-all, etc.)
+    this.registerDomEvent(document, "selectionchange", () => {
+      if (this.selectionDebounceTimer !== null) {
+        window.clearTimeout(this.selectionDebounceTimer);
+      }
+
+      this.selectionDebounceTimer = window.setTimeout(() => {
+        this.selectionDebounceTimer = null;
+
+        // If user is actively touching or dragging with mouse, wait until they lift finger/mouse
+        if (this.isMouseSelecting || this.isTouchSelecting) {
+          return;
+        }
+
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed) {
+          // If selection was cleared/collapsed, hide menu if user is not interacting with it
+          if (this.selectionMenu.isOpen()) {
+            const activeEl = document.activeElement;
+            if (!activeEl?.closest(".rc-selection-menu, .rc-popover, .rc-modal")) {
+              this.selectionMenu.hide();
+            }
+          }
+          return;
+        }
+
+        const text = selection.toString().trim();
+        if (text.length >= this.settings.minSelectionLength) {
+          this.handleSelectionEvent();
+        }
+      }, 180);
+    });
   }
 
-  private handleSelectionEvent(e: MouseEvent): void {
+  private handleSelectionEvent(e?: MouseEvent | TouchEvent): void {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!activeView) return;
 
@@ -348,28 +507,44 @@ export default class ReaderCompanionPlugin extends Plugin {
     if (isEditingMode && !this.settings.enableInEditingMode) return;
 
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) {
-      return;
+    let text = selection?.toString().trim() || "";
+
+    // On mobile source mode, fallback to editor selection if window selection string is empty
+    if (!text && isEditingMode) {
+      try {
+        text = activeView.editor.getSelection().trim();
+      } catch {
+        // ignore
+      }
     }
 
-    const text = selection.toString().trim();
-    if (text.length < this.settings.minSelectionLength) {
+    if (!text || text.length < this.settings.minSelectionLength) {
       return;
     }
 
     // Ensure the selection is within an Obsidian markdown preview or editor leaf
-    const anchorNode = selection.anchorNode;
-    const container = anchorNode?.parentElement?.closest(
-      ".markdown-preview-view, .markdown-rendered, .cm-editor"
-    );
+    const anchorNode = selection?.anchorNode;
+    const anchorEl = anchorNode?.nodeType === Node.ELEMENT_NODE
+      ? (anchorNode as Element)
+      : anchorNode?.parentElement;
 
-    if (!container) return;
+    const isInsideActiveView =
+      Boolean(anchorNode && activeView.contentEl.contains(anchorNode)) ||
+      Boolean(anchorEl && anchorEl.closest(".markdown-preview-view, .markdown-rendered, .cm-editor, .markdown-reading-view, .markdown-source-view")) ||
+      Boolean(activeView.containerEl.contains(document.activeElement));
+
+    if (!isInsideActiveView) return;
+
+    // Disallow if inside headers, ribbon, or active Reader Companion UI
+    if (anchorEl?.closest(".view-header, .rc-selection-menu, .rc-popover, .rc-modal, .workspace-ribbon, .rc-sidebar-actions")) {
+      return;
+    }
 
     const activeFile = this.app.workspace.getActiveFile();
     let existing: AnnotationItem | undefined;
     const markEl =
       (anchorNode?.parentElement?.closest("mark.rc-inline-highlight") as HTMLElement | null) ||
-      (selection.focusNode?.parentElement?.closest("mark.rc-inline-highlight") as HTMLElement | null);
+      (selection?.focusNode?.parentElement?.closest("mark.rc-inline-highlight") as HTMLElement | null);
     if (markEl?.dataset.rcId) {
       existing = this.storage.getAnnotationById(markEl.dataset.rcId);
     }
@@ -380,7 +555,7 @@ export default class ReaderCompanionPlugin extends Plugin {
     this.selectionMenu.show(coords, text, existing);
   }
 
-  private getSelectionCoordinates(e?: MouseEvent): { x: number; y: number; bottomY?: number } {
+  private getSelectionCoordinates(e?: MouseEvent | TouchEvent): { x: number; y: number; bottomY?: number } {
     const selection = window.getSelection();
     if (selection && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
@@ -392,13 +567,69 @@ export default class ReaderCompanionPlugin extends Plugin {
           bottomY: Math.round(rect.bottom)
         };
       }
+
+      // If boundingClientRect is 0x0 (common on mobile multi-line selection or inline tags)
+      const clientRects = range.getClientRects();
+      if (clientRects.length > 0) {
+        const first = clientRects[0];
+        const last = clientRects[clientRects.length - 1];
+        return {
+          x: Math.round(first.left + first.width / 2),
+          y: Math.round(first.top),
+          bottomY: Math.round(last.bottom)
+        };
+      }
     }
 
-    // Fallback to mouse event coords
+    // Try CodeMirror 6 editor coords if available
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (activeView && activeView.getMode() === "source") {
+      try {
+        const editor = activeView.editor as any;
+        const cursor = editor.getCursor("head");
+        if (typeof editor.coordsAtPos === "function" && typeof editor.posToOffset === "function") {
+          const coords = editor.coordsAtPos(editor.posToOffset(cursor));
+          if (coords && coords.left && coords.top) {
+            return {
+              x: Math.round(coords.left),
+              y: Math.round(coords.top),
+              bottomY: Math.round(coords.bottom || coords.top + 20)
+            };
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Fallback to event coordinates (mouse or touch)
+    let clientX: number | undefined;
+    let clientY: number | undefined;
+
+    if (e) {
+      if ("touches" in e && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else if ("changedTouches" in e && e.changedTouches.length > 0) {
+        clientX = e.changedTouches[0].clientX;
+        clientY = e.changedTouches[0].clientY;
+      } else if ("clientX" in e) {
+        clientX = (e as MouseEvent).clientX;
+        clientY = (e as MouseEvent).clientY;
+      }
+    }
+
+    if (clientX === undefined && this.lastTouchCoords) {
+      clientX = this.lastTouchCoords.x;
+      clientY = this.lastTouchCoords.y;
+    }
+
+    const fallbackX = clientX ?? Math.round(window.innerWidth / 2);
+    const fallbackY = clientY ?? Math.round(window.innerHeight / 2);
     return {
-      x: e?.clientX ?? Math.round(window.innerWidth / 2),
-      y: e?.clientY ?? Math.round(window.innerHeight / 2),
-      bottomY: (e?.clientY ?? Math.round(window.innerHeight / 2)) + 20
+      x: fallbackX,
+      y: fallbackY,
+      bottomY: fallbackY + 24
     };
   }
 
@@ -504,7 +735,88 @@ export default class ReaderCompanionPlugin extends Plugin {
 
   private handleDefine(word: string, coords?: { x: number; y: number; bottomY?: number }): void {
     const targetCoords = coords || this.getSelectionCoordinates();
-    this.definitionModal.show(targetCoords, word);
+    const activeFile = this.app.workspace.getActiveFile();
+    const contextSentence = this.extractContextFromSelection(word);
+
+    this.definitionModal.show({
+      coords: targetCoords,
+      rawWord: word,
+      contextSentence,
+      sourceTitle: activeFile?.basename,
+      sourcePath: activeFile?.path,
+      enableVocabulary: this.settings.enableVocabulary,
+      autoSaveVocabulary: this.settings.autoSaveVocabulary,
+      onSaveVocabulary: async (defResult, ctx) => {
+        return await this.vocabulary.saveWord({
+          word,
+          definitionResult: defResult,
+          contextSentence: ctx || contextSentence,
+          sourceTitle: activeFile?.basename,
+          sourcePath: activeFile?.path
+        });
+      },
+      isWordSaved: (w) => this.vocabulary.isWordSaved(w)
+    });
+  }
+
+  private async handleAddToVocabulary(word: string, coords?: { x: number; y: number; bottomY?: number }): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    const contextSentence = this.extractContextFromSelection(word);
+
+    await this.vocabulary.saveWord({
+      word,
+      contextSentence,
+      sourceTitle: activeFile?.basename,
+      sourcePath: activeFile?.path
+    });
+  }
+
+  extractContextFromSelection(selectionText: string): string {
+    const cleanWord = selectionText.trim();
+    if (!cleanWord) return "";
+
+    // 1. Try DOM selection parent block
+    const selection = window.getSelection();
+    if (selection && selection.anchorNode) {
+      const parent =
+        selection.anchorNode.nodeType === Node.ELEMENT_NODE
+          ? (selection.anchorNode as HTMLElement)
+          : selection.anchorNode.parentElement;
+      const blockEl = parent?.closest("p, li, blockquote, div.cm-line, h1, h2, h3, h4, h5, h6");
+      const fullText = (blockEl ? blockEl.textContent : parent?.textContent) || "";
+      if (fullText) {
+        const sentence = this.extractSentenceContainingWord(fullText, cleanWord);
+        if (sentence) return sentence;
+      }
+    }
+
+    // 2. Fallback to active editor line if in edit mode
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (activeView && activeView.getMode() === "source") {
+      try {
+        const editor = activeView.editor;
+        const cursor = editor.getCursor();
+        const lineText = editor.getLine(cursor.line);
+        const sentence = this.extractSentenceContainingWord(lineText, cleanWord);
+        if (sentence) return sentence;
+        if (lineText.trim()) return lineText.trim();
+      } catch {}
+    }
+
+    return "";
+  }
+
+  private extractSentenceContainingWord(fullText: string, word: string): string {
+    if (!fullText || !word) return "";
+    const cleanFull = fullText.replace(/\s+/g, " ").trim();
+    const sentences = cleanFull.split(/(?<=[.?!])\s+/);
+    const lowerWord = word.toLowerCase();
+    for (const s of sentences) {
+      if (s.toLowerCase().includes(lowerWord)) {
+        return s.trim();
+      }
+    }
+    return cleanFull.length > 200 ? cleanFull.slice(0, 200) + "..." : cleanFull;
   }
 
   private handleSearchVault(text: string): void {

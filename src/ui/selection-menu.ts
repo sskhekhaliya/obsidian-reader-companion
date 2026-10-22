@@ -6,6 +6,8 @@ export interface SelectionMenuCallbacks {
   onCopy: (text: string) => void;
   onTranslate: (text: string, coords: { x: number; y: number; bottomY?: number }) => void;
   onDefine: (word: string, coords: { x: number; y: number; bottomY?: number }) => void;
+  onAddToVocabulary?: (word: string, coords: { x: number; y: number; bottomY?: number }) => void;
+  shouldShowAddToVocabulary?: () => boolean;
   onSearchVault: (text: string) => void;
   onHighlight: (text: string, colorHex: string, existingId?: string) => void;
   onDeleteHighlight?: (id: string) => void;
@@ -21,7 +23,7 @@ export class SelectionMenu {
   private existing?: AnnotationItem;
   private callbacks: SelectionMenuCallbacks;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
-  private mousedownHandler: ((e: MouseEvent) => void) | null = null;
+  private outsidePointerHandler: ((e: Event) => void) | null = null;
 
   constructor(callbacks: SelectionMenuCallbacks) {
     this.callbacks = callbacks;
@@ -79,7 +81,17 @@ export class SelectionMenu {
       });
     }
 
-    // 5. Search Vault
+    // 5. Add to Vocabulary (If single word and callback provided and enabled)
+    const canShowVocab = !this.callbacks.shouldShowAddToVocabulary || this.callbacks.shouldShowAddToVocabulary();
+    if (this.isSingleWord && this.callbacks.onAddToVocabulary && canShowVocab) {
+      this.createMenuItem(listEl, ICONS.bookmark, "Add to vocabulary", () => {
+        const savedCoords = { ...this.coords };
+        this.hide();
+        this.callbacks.onAddToVocabulary!(this.cleanWord, savedCoords);
+      });
+    }
+
+    // 6. Search Vault
     this.createMenuItem(listEl, ICONS.search, "Search vault", () => {
       this.hide();
       this.callbacks.onSearchVault(this.text);
@@ -125,39 +137,62 @@ export class SelectionMenu {
     this.el.appendChild(colorRow);
     document.body.appendChild(this.el);
 
-    // Compute position
-    const menuWidth = 190;
-    const estimatedHeight = (this.isSingleWord ? 240 : 200) + (this.existing ? 35 : 0);
-    const isNearTop = coords.y - estimatedHeight < 20;
+    // Compute position with viewport awareness (handles mobile virtual keyboards and scale)
+    const vw = window.visualViewport?.width ?? window.innerWidth;
+    const vh = window.visualViewport?.height ?? window.innerHeight;
+    const vx = window.visualViewport?.offsetLeft ?? 0;
+    const vy = window.visualViewport?.offsetTop ?? 0;
 
+    const menuWidth = 185;
+    const estimatedHeight = (this.isSingleWord ? 240 : 200) + (this.existing ? 35 : 0);
+
+    // Keep horizontally centered and within screen bounds
     let posX = coords.x;
-    if (posX - menuWidth / 2 < 12) {
-      posX = menuWidth / 2 + 12;
-    } else if (posX + menuWidth / 2 > window.innerWidth - 12) {
-      posX = window.innerWidth - menuWidth / 2 - 12;
-    }
+    const halfWidth = menuWidth / 2;
+    posX = Math.max(vx + halfWidth + 10, Math.min(vx + vw - halfWidth - 10, posX));
+
+    // Determine vertical placement
+    const spaceAbove = coords.y - vy;
+    const bottomTarget = coords.bottomY ?? (coords.y + 24);
+    const spaceBelow = (vy + vh) - bottomTarget;
 
     let topPos: number;
-    let transform: string;
+    let translateY: string;
 
-    if (isNearTop && coords.bottomY) {
-      topPos = coords.bottomY + 10;
-      transform = "translate(-50%, 0)";
+    if (spaceAbove >= estimatedHeight + 15) {
+      // Place above selection
+      topPos = Math.max(vy + 10, coords.y - 10);
+      translateY = "-100%";
+    } else if (spaceBelow >= estimatedHeight + 15) {
+      // Place below selection
+      topPos = Math.min(vy + vh - estimatedHeight - 10, bottomTarget + 10);
+      translateY = "0%";
     } else {
-      topPos = coords.y - 10;
-      transform = "translate(-50%, -100%)";
+      // Very tight space (e.g. mobile phone with keyboard open)
+      if (spaceBelow >= spaceAbove) {
+        topPos = Math.max(vy + 10, Math.min(vy + vh - estimatedHeight - 10, bottomTarget + 6));
+        translateY = "0%";
+      } else {
+        topPos = Math.max(vy + estimatedHeight + 10, coords.y - 6);
+        translateY = "-100%";
+      }
     }
 
-    this.el.style.left = `${posX}px`;
-    this.el.style.top = `${topPos}px`;
-    this.el.style.transform = transform;
+    this.el.style.setProperty("--rc-translate-y", translateY);
+    this.el.style.left = `${Math.round(posX)}px`;
+    this.el.style.top = `${Math.round(topPos)}px`;
+    this.el.style.transform = `translate(-50%, ${translateY})`;
 
+    // Stop propagation on inside interaction
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
 
     setTimeout(() => {
-      this.mousedownHandler = (e: MouseEvent) => {
-        if (this.el && !this.el.contains(e.target as Node)) {
+      this.outsidePointerHandler = (e: Event) => {
+        const target = (e instanceof MouseEvent ? e.target : (e as TouchEvent).touches?.[0]?.target || e.target) as Node;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -167,9 +202,10 @@ export class SelectionMenu {
         }
       };
 
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
   }
 
   private createMenuItem(container: HTMLElement, iconSvg: string, title: string, onClick: () => void): void {
@@ -185,9 +221,10 @@ export class SelectionMenu {
   }
 
   hide(): void {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);

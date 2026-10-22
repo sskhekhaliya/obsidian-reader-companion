@@ -42,6 +42,13 @@ export interface ReaderCompanionSettings {
   autoPronounce: boolean;
   showSearchVault: boolean;
   minSelectionLength: number;
+  enableVocabulary: boolean;
+  autoSaveVocabulary: boolean;
+  vocabularyFilePath: string;
+  vocabularyHeadingLevel: "h2" | "h3" | "h4";
+  addVocabularyProperty: boolean;
+  vocabularyPropertyKey: string;
+  vocabularyPropertyValue: string;
 }
 
 export const DEFAULT_SETTINGS: ReaderCompanionSettings = {
@@ -53,7 +60,14 @@ export const DEFAULT_SETTINGS: ReaderCompanionSettings = {
   uiTheme: "auto",
   autoPronounce: false,
   showSearchVault: true,
-  minSelectionLength: 1
+  minSelectionLength: 1,
+  enableVocabulary: true,
+  autoSaveVocabulary: true,
+  vocabularyFilePath: "Vocabulary.md",
+  vocabularyHeadingLevel: "h3",
+  addVocabularyProperty: true,
+  vocabularyPropertyKey: "type",
+  vocabularyPropertyValue: "vocabulary"
 };
 
 export interface DictionaryDefinition {
@@ -70,6 +84,8 @@ export interface DictionaryMeaning {
 
 export interface DictionaryResult {
   word: string;
+  rootWord?: string;
+  inflectionNote?: string;
   phonetic?: string;
   phonetics?: { text?: string; audio?: string }[];
   meanings: DictionaryMeaning[];

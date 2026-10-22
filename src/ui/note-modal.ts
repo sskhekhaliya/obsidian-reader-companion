@@ -14,7 +14,7 @@ export interface NoteModalOptions {
 
 export class NoteModal {
   private el: HTMLElement | null = null;
-  private mousedownHandler: ((e: MouseEvent) => void) | null = null;
+  private outsidePointerHandler: ((e: Event) => void) | null = null;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
   show(options: NoteModalOptions): void {
@@ -149,7 +149,9 @@ export class NoteModal {
     this.el.appendChild(body);
     document.body.appendChild(this.el);
 
-    if (options.coords) {
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else if (options.coords) {
       this.position(options.coords);
     } else {
       this.el.classList.add("centered");
@@ -158,11 +160,14 @@ export class NoteModal {
     textarea.focus();
 
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
 
     setTimeout(() => {
-      this.mousedownHandler = (e: MouseEvent) => {
-        if (this.el && !this.el.contains(e.target as Node)) {
+      this.outsidePointerHandler = (e: Event) => {
+        const target = (e instanceof MouseEvent ? e.target : (e as TouchEvent).touches?.[0]?.target || e.target) as Node;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -174,9 +179,10 @@ export class NoteModal {
           doSave();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
   }
 
   private position(coords: { x: number; y: number; bottomY?: number }): void {
@@ -206,9 +212,10 @@ export class NoteModal {
   }
 
   hide(): void {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);

@@ -46,7 +46,7 @@
    ========================================================================== */
 .rc-selection-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--layer-popover, 10000);
   width: 185px;
   background-color: var(--rc-bg);
   color: var(--rc-text);
@@ -56,18 +56,21 @@
   padding: 6px;
   user-select: none;
   font-family: inherit;
+  --rc-translate-y: -100%;
   animation: rc-pop-in 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   backdrop-filter: blur(8px);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 @keyframes rc-pop-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -95%) scale(0.95);
+    transform: translate(-50%, var(--rc-translate-y, -100%)) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -100%) scale(1);
+    transform: translate(-50%, var(--rc-translate-y, -100%)) scale(1);
   }
 }
 
@@ -172,10 +175,10 @@
    ========================================================================== */
 .rc-popover {
   position: fixed;
-  z-index: 1001;
+  z-index: var(--layer-modal, 10001);
   width: 360px;
-  max-width: calc(100vw - 32px);
-  max-height: 480px;
+  max-width: calc(100vw - 24px);
+  max-height: min(520px, calc(100vh - 40px));
   display: flex;
   flex-direction: column;
   background-color: var(--rc-bg);
@@ -185,6 +188,8 @@
   box-shadow: var(--rc-shadow);
   overflow: hidden;
   animation: rc-fade-in 0.15s ease-out;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .rc-popover.centered {
@@ -196,10 +201,11 @@
 @keyframes rc-fade-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -95%) scale(0.96);
+    transform: translate(-50%, -50%) scale(0.96);
   }
   to {
     opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
@@ -235,6 +241,12 @@
   color: var(--rc-primary);
 }
 
+.rc-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .rc-circle-btn {
   display: flex;
   align-items: center;
@@ -247,11 +259,20 @@
   color: var(--rc-text);
   cursor: pointer;
   padding: 0;
-  transition: opacity 0.15s ease, background-color 0.15s ease;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
 .rc-circle-btn:hover {
   opacity: 0.8;
+}
+
+.rc-circle-btn.saved {
+  color: var(--rc-primary);
+  background: var(--rc-hover);
+}
+
+.rc-circle-btn.saved svg {
+  fill: currentColor;
 }
 
 .rc-popover-body {
@@ -269,8 +290,15 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--rc-text-muted);
+}
+
+.rc-inflection-tag {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--rc-text-muted);
+  margin-bottom: 10px;
 }
 
 .rc-phonetic-text {

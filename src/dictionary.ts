@@ -6,14 +6,52 @@ export class DictionaryService {
 
   /**
    * Look up definition using Free Dictionary API, with fallback to Wiktionary.
+   * Automatically resolves inflected/plural forms (e.g. "interactions" -> "interaction",
+   * "peers" -> "peer") so full definitions, phonetics, and examples are always returned.
    */
   static async lookup(rawWord: string): Promise<DictionaryResult | null> {
     const cleanWord = rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     if (!cleanWord) return null;
 
+    let result = await this.lookupDirect(cleanWord);
+
+    // Check if the result is just an inflection pointer (e.g. "plural of interaction")
+    const inflectionInfo = result ? this.extractInflectionInfo(result) : null;
+    let targetRoot: string | null | undefined = inflectionInfo?.root;
+
+    // If cleanWord didn't find results or was an inflection, attempt base word guessing
+    if (!targetRoot && (!result || result.meanings.length === 0)) {
+      targetRoot = this.guessBaseWord(cleanWord);
+    }
+
+    if (targetRoot && targetRoot.toLowerCase() !== cleanWord.toLowerCase()) {
+      try {
+        const rootResult = await this.lookupDirect(targetRoot);
+        if (rootResult && rootResult.meanings && rootResult.meanings.length > 0) {
+          return {
+            word: cleanWord,
+            rootWord: targetRoot,
+            inflectionNote: inflectionInfo?.note || `plural/form of ${targetRoot}`,
+            phonetic: rootResult.phonetic || result?.phonetic,
+            phonetics:
+              rootResult.phonetics && rootResult.phonetics.length > 0
+                ? rootResult.phonetics
+                : result?.phonetics,
+            meanings: rootResult.meanings
+          };
+        }
+      } catch {
+        // Fall back to original result
+      }
+    }
+
+    return result;
+  }
+
+  private static async lookupDirect(word: string): Promise<DictionaryResult | null> {
     // 1. Try Free Dictionary API
     try {
-      const freeDictResult = await this.lookupFreeDict(cleanWord);
+      const freeDictResult = await this.lookupFreeDict(word);
       if (freeDictResult) return freeDictResult;
     } catch {
       // Continue to fallback
@@ -21,10 +59,53 @@ export class DictionaryService {
 
     // 2. Try Wiktionary REST API fallback
     try {
-      const wiktionaryResult = await this.lookupWiktionary(cleanWord);
+      const wiktionaryResult = await this.lookupWiktionary(word);
       if (wiktionaryResult) return wiktionaryResult;
     } catch {
       // Continue
+    }
+
+    return null;
+  }
+
+  private static extractInflectionInfo(result: DictionaryResult): { root: string; note: string } | null {
+    if (!result.meanings || result.meanings.length === 0) return null;
+
+    for (const meaning of result.meanings) {
+      for (const defObj of meaning.definitions || []) {
+        const def = defObj.definition.trim();
+        const match = def.match(
+          /^(?:plural|third-person\s+singular(?:\s+simple\s+present)?|past\s+tense|past\s+participle|present\s+participle|comparative|superlative|alternative\s+(?:spelling|form))\s+of\s+(?:the\s+)?(?:word\s+)?["'“]?([a-zA-Z\p{L}'-]+)["'”]?\.?$/iu
+        );
+        if (match && match[1]) {
+          return {
+            root: match[1].toLowerCase().trim(),
+            note: def
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  private static guessBaseWord(word: string): string | null {
+    const lower = word.toLowerCase();
+    if (lower.length <= 3) return null;
+
+    if (lower.endsWith("ies") && lower.length > 4) {
+      return lower.slice(0, -3) + "y";
+    }
+    if (lower.endsWith("es") && lower.length > 4) {
+      return lower.slice(0, -2);
+    }
+    if (lower.endsWith("s") && !lower.endsWith("ss") && lower.length > 3) {
+      return lower.slice(0, -1);
+    }
+    if (lower.endsWith("ed") && lower.length > 4) {
+      return lower.slice(0, -2);
+    }
+    if (lower.endsWith("ing") && lower.length > 5) {
+      return lower.slice(0, -3);
     }
 
     return null;
@@ -69,7 +150,13 @@ export class DictionaryService {
             .map((d: any) => {
               const rawDef = typeof d.definition === "string" ? d.definition : "";
               const cleanDef = rawDef.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-              return cleanDef ? { definition: cleanDef } : null;
+              let example: string | undefined;
+              if (Array.isArray(d.examples) && d.examples.length > 0) {
+                const rawEx = typeof d.examples[0] === "string" ? d.examples[0] : "";
+                const cleanEx = rawEx.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+                if (cleanEx) example = cleanEx;
+              }
+              return cleanDef ? { definition: cleanDef, example } : null;
             })
             .filter(Boolean);
 

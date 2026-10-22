@@ -1,16 +1,37 @@
+import { Notice } from "obsidian";
 import { DictionaryService } from "../dictionary";
 import { DictionaryResult } from "../types";
 import { ICONS } from "./icons";
 
+export interface DefinitionModalOptions {
+  coords: { x: number; y: number; bottomY?: number };
+  rawWord: string;
+  contextSentence?: string;
+  sourceTitle?: string;
+  sourcePath?: string;
+  enableVocabulary?: boolean;
+  autoSaveVocabulary?: boolean;
+  onSaveVocabulary?: (result: DictionaryResult, context?: string) => Promise<{ success: boolean; alreadyExists: boolean }>;
+  isWordSaved?: (word: string) => Promise<boolean>;
+}
+
 export class DefinitionModal {
   private el: HTMLElement | null = null;
-  private mousedownHandler: ((e: MouseEvent) => void) | null = null;
+  private outsidePointerHandler: ((e: Event) => void) | null = null;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
-  async show(coords: { x: number; y: number; bottomY?: number }, rawWord: string): Promise<void> {
+  async show(
+    targetOrOptions: { x: number; y: number; bottomY?: number } | DefinitionModalOptions,
+    legacyWord?: string
+  ): Promise<void> {
     this.hide();
 
-    const cleanWord = rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    const options: DefinitionModalOptions =
+      typeof (targetOrOptions as any).rawWord === "string"
+        ? (targetOrOptions as DefinitionModalOptions)
+        : { coords: targetOrOptions as any, rawWord: legacyWord || "" };
+
+    const cleanWord = options.rawWord.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     if (!cleanWord) return;
 
     this.el = document.createElement("div");
@@ -25,14 +46,63 @@ export class DefinitionModal {
     title.textContent = cleanWord.toLowerCase();
     header.appendChild(title);
 
+    const headerActions = document.createElement("div");
+    headerActions.className = "rc-header-actions";
+
+    let vocabBtn: HTMLButtonElement | null = null;
+    let isSaved = false;
+    let cachedResult: DictionaryResult | null = null;
+
+    if (options.enableVocabulary && options.onSaveVocabulary) {
+      vocabBtn = document.createElement("button");
+      vocabBtn.type = "button";
+      vocabBtn.className = "rc-circle-btn rc-vocab-save-btn";
+      vocabBtn.title = "Save to Vocabulary";
+      vocabBtn.innerHTML = ICONS.bookmark;
+
+      if (options.isWordSaved) {
+        options.isWordSaved(cleanWord).then((saved) => {
+          if (saved && vocabBtn) {
+            isSaved = true;
+            vocabBtn.classList.add("saved");
+            vocabBtn.title = "Saved in Vocabulary";
+            vocabBtn.innerHTML = ICONS.bookmarkCheck;
+          }
+        });
+      }
+
+      vocabBtn.addEventListener("click", async () => {
+        if (isSaved) {
+          new Notice(`"${cleanWord}" is already saved in Vocabulary.`);
+          return;
+        }
+
+        const res = await options.onSaveVocabulary!(
+          cachedResult || { word: cleanWord, meanings: [] },
+          options.contextSentence
+        );
+        if (res.success || res.alreadyExists) {
+          isSaved = true;
+          if (vocabBtn) {
+            vocabBtn.classList.add("saved");
+            vocabBtn.title = "Saved in Vocabulary";
+            vocabBtn.innerHTML = ICONS.bookmarkCheck;
+          }
+        }
+      });
+
+      headerActions.appendChild(vocabBtn);
+    }
+
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "rc-circle-btn";
     closeBtn.title = "Close";
     closeBtn.innerHTML = ICONS.close;
     closeBtn.addEventListener("click", () => this.hide());
-    header.appendChild(closeBtn);
+    headerActions.appendChild(closeBtn);
 
+    header.appendChild(headerActions);
     this.el.appendChild(header);
 
     // Body container
@@ -47,15 +117,23 @@ export class DefinitionModal {
     this.el.appendChild(body);
 
     document.body.appendChild(this.el);
-    this.position(coords);
 
-    // Click inside stop propagation
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else {
+      this.position(options.coords);
+    }
+
+    // Touch & click inside stop propagation
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
 
     setTimeout(() => {
-      this.mousedownHandler = (e: MouseEvent) => {
-        if (this.el && !this.el.contains(e.target as Node)) {
+      this.outsidePointerHandler = (e: Event) => {
+        const target = (e instanceof MouseEvent ? e.target : (e as TouchEvent).touches?.[0]?.target || e.target) as Node;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -64,9 +142,10 @@ export class DefinitionModal {
           this.hide();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
 
     // Fetch definition
     try {
@@ -76,7 +155,20 @@ export class DefinitionModal {
       if (!result) {
         this.renderNotFound(body, cleanWord);
       } else {
+        cachedResult = result;
         this.renderResult(body, result);
+
+        // Auto-save if enabled
+        if (options.enableVocabulary && options.autoSaveVocabulary && options.onSaveVocabulary && !isSaved) {
+          options.onSaveVocabulary(result, options.contextSentence).then((res) => {
+            if ((res.success || res.alreadyExists) && vocabBtn) {
+              isSaved = true;
+              vocabBtn.classList.add("saved");
+              vocabBtn.title = "Saved in Vocabulary";
+              vocabBtn.innerHTML = ICONS.bookmarkCheck;
+            }
+          });
+        }
       }
     } catch {
       if (!this.el) return;
@@ -145,6 +237,14 @@ export class DefinitionModal {
     pronRow.appendChild(speakerBtn);
 
     body.appendChild(pronRow);
+
+    // Inflection note if plural/form
+    if (result.inflectionNote) {
+      const inflectDiv = document.createElement("div");
+      inflectDiv.className = "rc-inflection-tag";
+      inflectDiv.textContent = `(${result.inflectionNote})`;
+      body.appendChild(inflectDiv);
+    }
 
     // Meanings
     if (result.meanings && result.meanings.length > 0) {
@@ -228,9 +328,10 @@ export class DefinitionModal {
   }
 
   hide(): void {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);

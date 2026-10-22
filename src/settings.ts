@@ -119,6 +119,101 @@ export class ReaderCompanionSettingTab extends PluginSettingTab {
         });
       });
 
+    // Vocabulary Tracking
+    containerEl.createEl("h3", { text: "Vocabulary Tracking" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Save looked-up words, definitions, and sentence context into a dedicated file formatted for vocabulary tracking and flashcards (compatible with Goodreads Bookshelf)."
+    });
+
+    new Setting(containerEl)
+      .setName("Enable Vocabulary Tracking")
+      .setDesc("Enable vocabulary collection and saving.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.enableVocabulary !== false);
+        toggle.onChange(async (val) => {
+          this.plugin.settings.enableVocabulary = val;
+          await this.plugin.savePluginData();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Auto-Save on Define")
+      .setDesc(
+        "Automatically save the word, definition, and sentence context to your vocabulary file whenever you click 'Define' (Kindle style). When disabled, an 'Add to vocabulary' option is displayed in the selection menu and definition popup."
+      )
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.autoSaveVocabulary !== false);
+        toggle.onChange(async (val) => {
+          this.plugin.settings.autoSaveVocabulary = val;
+          await this.plugin.savePluginData();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Vocabulary File Path")
+      .setDesc("Vault path to the markdown file where vocabulary entries are appended.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Vocabulary.md")
+          .setValue(this.plugin.settings.vocabularyFilePath || "Vocabulary.md")
+          .onChange(async (val) => {
+            this.plugin.settings.vocabularyFilePath = val.trim() || "Vocabulary.md";
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Vocabulary Heading Level")
+      .setDesc("Heading level used for each word in the vocabulary file.")
+      .addDropdown((drop) => {
+        drop.addOption("h2", "H2 (##)");
+        drop.addOption("h3", "H3 (###) — Default");
+        drop.addOption("h4", "H4 (####)");
+        drop.setValue(this.plugin.settings.vocabularyHeadingLevel || "h3");
+        drop.onChange(async (val: any) => {
+          this.plugin.settings.vocabularyHeadingLevel = val;
+          await this.plugin.savePluginData();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Add Frontmatter Property to Vocabulary")
+      .setDesc("Include a frontmatter property in the vocabulary file (e.g. type: vocabulary) so flashcards or queries can find all vocabulary.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.addVocabularyProperty !== false);
+        toggle.onChange(async (val) => {
+          this.plugin.settings.addVocabularyProperty = val;
+          await this.plugin.savePluginData();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Vocabulary Property Key")
+      .setDesc("YAML frontmatter key name for identifying the vocabulary file.")
+      .addText((text) => {
+        text
+          .setPlaceholder("type")
+          .setValue(this.plugin.settings.vocabularyPropertyKey || "type")
+          .onChange(async (val) => {
+            this.plugin.settings.vocabularyPropertyKey = val.trim() || "type";
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Vocabulary Property Value")
+      .setDesc("YAML frontmatter value for identifying the vocabulary file.")
+      .addText((text) => {
+        text
+          .setPlaceholder("vocabulary")
+          .setValue(this.plugin.settings.vocabularyPropertyValue || "vocabulary")
+          .onChange(async (val) => {
+            this.plugin.settings.vocabularyPropertyValue = val.trim() || "vocabulary";
+            await this.plugin.savePluginData();
+          });
+      });
+
     // Vault Storage & Backup
     containerEl.createEl("h3", { text: "Data & Storage Persistence" });
     new Setting(containerEl)

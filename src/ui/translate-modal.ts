@@ -6,7 +6,7 @@ export class TranslateModal {
   private currentText: string = "";
   private currentTargetLang: string = "en";
   private apiKey?: string;
-  private mousedownHandler: ((e: MouseEvent) => void) | null = null;
+  private outsidePointerHandler: ((e: Event) => void) | null = null;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
   async show(
@@ -69,14 +69,22 @@ export class TranslateModal {
     this.el.appendChild(body);
 
     document.body.appendChild(this.el);
-    this.position(coords);
+
+    if (window.innerWidth <= 500) {
+      this.el.classList.add("centered");
+    } else {
+      this.position(coords);
+    }
 
     this.el.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    this.el.addEventListener("touchend", (e) => e.stopPropagation());
     this.el.addEventListener("click", (e) => e.stopPropagation());
 
     setTimeout(() => {
-      this.mousedownHandler = (e: MouseEvent) => {
-        if (this.el && !this.el.contains(e.target as Node)) {
+      this.outsidePointerHandler = (e: Event) => {
+        const target = (e instanceof MouseEvent ? e.target : (e as TouchEvent).touches?.[0]?.target || e.target) as Node;
+        if (this.el && target && !this.el.contains(target)) {
           this.hide();
         }
       };
@@ -85,9 +93,10 @@ export class TranslateModal {
           this.hide();
         }
       };
-      document.addEventListener("mousedown", this.mousedownHandler);
+      document.addEventListener("mousedown", this.outsidePointerHandler);
+      document.addEventListener("touchstart", this.outsidePointerHandler, { passive: true });
       document.addEventListener("keydown", this.keydownHandler);
-    }, 50);
+    }, 60);
 
     await this.runTranslation();
   }
@@ -215,9 +224,10 @@ export class TranslateModal {
   }
 
   hide(): void {
-    if (this.mousedownHandler) {
-      document.removeEventListener("mousedown", this.mousedownHandler);
-      this.mousedownHandler = null;
+    if (this.outsidePointerHandler) {
+      document.removeEventListener("mousedown", this.outsidePointerHandler);
+      document.removeEventListener("touchstart", this.outsidePointerHandler);
+      this.outsidePointerHandler = null;
     }
     if (this.keydownHandler) {
       document.removeEventListener("keydown", this.keydownHandler);
