@@ -32,6 +32,28 @@ export const SUPPORTED_LANGUAGES: SupportedLanguage[] = [
 
 export class TranslatorService {
   /**
+   * Tests whether a Google Cloud Translation API key is valid.
+   */
+  static async verifyApiKey(apiKey: string): Promise<boolean> {
+    const cleanKey = apiKey.trim();
+    if (!cleanKey) return false;
+    const url = `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(cleanKey)}`;
+    const response = await requestUrl({
+      url,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        q: "Hello",
+        target: "es",
+        format: "text"
+      })
+    });
+    return response.status === 200 && Boolean(response.json?.data?.translations?.[0]);
+  }
+
+  /**
    * Translate text to target language using either official Google Cloud Translation API (if API key provided)
    * or Google's client endpoint.
    */

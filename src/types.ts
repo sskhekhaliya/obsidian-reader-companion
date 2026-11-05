@@ -36,6 +36,8 @@ export interface ReaderCompanionSettings {
   defaultColor: string;
   targetLanguage: string;
   googleApiKey: string;
+  useKeychain: boolean;
+  googleApiSecretId: string;
   enableInReadingMode: boolean;
   enableInEditingMode: boolean;
   uiTheme: "auto" | "dark" | "light" | "sepia";
@@ -55,6 +57,8 @@ export const DEFAULT_SETTINGS: ReaderCompanionSettings = {
   defaultColor: "#fbbc04",
   targetLanguage: "en",
   googleApiKey: "",
+  useKeychain: false,
+  googleApiSecretId: "",
   enableInReadingMode: true,
   enableInEditingMode: false,
   uiTheme: "auto",

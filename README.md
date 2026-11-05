@@ -21,7 +21,7 @@
 - **🌐 Multi-Language Translator**:
   - Instant Google Translate integration supporting 20+ languages (English, Spanish, French, German, Hindi, Gujarati, Chinese, Japanese, Korean, Russian, Arabic, and more).
   - Works out-of-the-box with zero setup using Google's client endpoint.
-  - **Optional Google Cloud Translation API**: If you have your own Google Cloud API Key, enter it in settings to use your dedicated cloud quota!
+  - **Optional Google Cloud Translation API & Keychain**: If you have your own Google Cloud API Key, enter it directly or select it securely from your Obsidian Keychain (SecretStorage) to use your dedicated cloud quota!
   - Audio pronunciation for translated phrases.
   - One-click copy and "Open in Google Translate" button.
 

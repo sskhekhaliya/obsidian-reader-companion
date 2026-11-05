@@ -1,7 +1,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import * as obsidian from "obsidian";
 import type ReaderCompanionPlugin from "./main";
 import { HIGHLIGHT_COLORS } from "./types";
-import { SUPPORTED_LANGUAGES } from "./translator";
+import { SUPPORTED_LANGUAGES, TranslatorService } from "./translator";
 
 export class ReaderCompanionSettingTab extends PluginSettingTab {
   plugin: ReaderCompanionPlugin;
@@ -51,20 +52,132 @@ export class ReaderCompanionSettingTab extends PluginSettingTab {
         });
       });
 
-    // Google Cloud Translation API Key
-    new Setting(containerEl)
-      .setName("Google Cloud Translation API Key (Optional)")
-      .setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.")
-      .addText((text) => {
-        text
-          .setPlaceholder("Enter your API key...")
-          .setValue(this.plugin.settings.googleApiKey || "")
-          .onChange(async (val) => {
-            this.plugin.settings.googleApiKey = val.trim();
-            await this.plugin.savePluginData();
+    // Google Cloud Translation API Key & Keychain
+    const isKeychainSupported = this.plugin.keychain.isAvailable();
+    const SecretComponentClass = (obsidian as any).SecretComponent;
+    const useKeychain = Boolean(
+      this.plugin.settings.useKeychain ||
+      (isKeychainSupported && Boolean(this.plugin.settings.googleApiSecretId))
+    );
+
+    if (isKeychainSupported) {
+      new Setting(containerEl)
+        .setName("Use Obsidian Keychain (SecretStorage)")
+        .setDesc(
+          isKeychainSupported
+            ? "Store and select your Google Cloud Translation API key securely from your Obsidian Keychain instead of plaintext."
+            : "Obsidian Keychain (SecretStorage) is supported in Obsidian v1.11.4+. You are currently using plaintext storage."
+        )
+        .addToggle((toggle) => {
+          toggle
+            .setValue(useKeychain)
+            .setDisabled(!isKeychainSupported)
+            .onChange(async (val) => {
+              this.plugin.settings.useKeychain = val;
+              await this.plugin.savePluginData();
+              this.display();
+            });
+        });
+    }
+
+    if (useKeychain && isKeychainSupported) {
+      if (SecretComponentClass) {
+        new Setting(containerEl)
+          .setName("Keychain Secret")
+          .setDesc("Select an existing secret or click '+' to create a secret containing your Google Cloud Translation API key.")
+          .addComponent((cb) => {
+            const comp = new SecretComponentClass(this.app, cb);
+            comp
+              .setValue(this.plugin.settings.googleApiSecretId || "")
+              .onChange(async (val: string) => {
+                this.plugin.settings.googleApiSecretId = val;
+                await this.plugin.savePluginData();
+              });
+            return comp;
+          })
+          .addButton((btn) => {
+            btn
+              .setButtonText("Test Key")
+              .setCta()
+              .onClick(async () => {
+                const key = this.plugin.keychain.getGoogleApiKey(this.plugin.settings);
+                if (!key) {
+                  new Notice("No secret selected or secret is empty in Obsidian Keychain.");
+                  return;
+                }
+                btn.setButtonText("Testing...");
+                btn.setDisabled(true);
+                try {
+                  const isValid = await TranslatorService.verifyApiKey(key);
+                  if (isValid) {
+                    new Notice("Google Cloud Translation API key verified successfully.");
+                  } else {
+                    new Notice("Failed to verify Google Cloud Translation API key.");
+                  }
+                } catch (err: any) {
+                  new Notice(`Verification failed: ${err.message || "Unknown error"}`);
+                } finally {
+                  btn.setButtonText("Test Key");
+                  btn.setDisabled(false);
+                }
+              });
           });
-        text.inputEl.type = "password";
-      });
+      } else {
+        new Setting(containerEl)
+          .setName("Keychain Secret Identifier")
+          .setDesc("Enter the name of your secret in Obsidian Keychain.")
+          .addText((text) => {
+            text
+              .setPlaceholder("e.g. google-translate-api-key")
+              .setValue(this.plugin.settings.googleApiSecretId || "")
+              .onChange(async (val) => {
+                this.plugin.settings.googleApiSecretId = val.trim();
+                await this.plugin.savePluginData();
+              });
+          });
+      }
+    } else {
+      new Setting(containerEl)
+        .setName("Google Cloud Translation API Key (Optional)")
+        .setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.")
+        .addText((text) => {
+          text
+            .setPlaceholder("Enter your API key...")
+            .setValue(this.plugin.settings.googleApiKey || "")
+            .onChange(async (val) => {
+              this.plugin.settings.googleApiKey = val.trim();
+              await this.plugin.savePluginData();
+            });
+          text.inputEl.type = "password";
+        })
+        .addButton((btn) => {
+          btn
+            .setButtonText("Test Key")
+            .setCta()
+            .onClick(async () => {
+              const key = this.plugin.settings.googleApiKey?.trim();
+              if (!key) {
+                new Notice("Please enter an API key to test.");
+                return;
+              }
+              btn.setButtonText("Testing...");
+              btn.setDisabled(true);
+              try {
+                const isValid = await TranslatorService.verifyApiKey(key);
+                if (isValid) {
+                  new Notice("Google Cloud Translation API key verified successfully.");
+                } else {
+                  new Notice("Failed to verify Google Cloud Translation API key.");
+                }
+              } catch (err: any) {
+                new Notice(`Verification failed: ${err.message || "Unknown error"}`);
+              } finally {
+                btn.setButtonText("Test Key");
+                btn.setDisabled(false);
+              }
+            });
+        });
+    }
 
     // Reading Mode toggle
     new Setting(containerEl)

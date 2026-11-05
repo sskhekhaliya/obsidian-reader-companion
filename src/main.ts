@@ -14,6 +14,7 @@ import { NoteModal, NoteModalOptions } from "./ui/note-modal";
 import { ReaderCompanionView, VIEW_TYPE_READER_COMPANION } from "./ui/annotations-view";
 import { ReaderCompanionSettingTab } from "./settings";
 import { VocabularyService } from "./vocabulary";
+import { KeychainService } from "./keychain";
 
 export default class ReaderCompanionPlugin extends Plugin {
   data: ReaderCompanionData = {
@@ -27,6 +28,7 @@ export default class ReaderCompanionPlugin extends Plugin {
   storage!: StorageManager;
   highlighter!: DomHighlighter;
   vocabulary!: VocabularyService;
+  keychain!: KeychainService;
 
   private selectionMenu!: SelectionMenu;
   private definitionModal!: DefinitionModal;
@@ -41,6 +43,7 @@ export default class ReaderCompanionPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadPluginData();
 
+    this.keychain = new KeychainService(this.app);
     this.storage = new StorageManager(this);
     this.highlighter = new DomHighlighter(this);
     this.vocabulary = new VocabularyService(this);
@@ -230,7 +233,12 @@ export default class ReaderCompanionPlugin extends Plugin {
         }
         if (selection) {
           const coords = this.getSelectionCoordinates();
-          this.translateModal.show(coords, selection, this.settings.targetLanguage);
+          this.translateModal.show(
+            coords,
+            selection,
+            this.settings.targetLanguage,
+            this.keychain.getGoogleApiKey(this.settings)
+          );
         } else {
           new Notice("Please select text to translate.");
         }
@@ -729,7 +737,7 @@ export default class ReaderCompanionPlugin extends Plugin {
       targetCoords,
       text,
       this.settings.targetLanguage,
-      this.settings.googleApiKey
+      this.keychain.getGoogleApiKey(this.settings)
     );
   }
 

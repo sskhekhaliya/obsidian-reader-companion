@@ -1,7 +1,9 @@
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -15,6 +17,14 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // src/main.ts
@@ -37,6 +47,8 @@ var DEFAULT_SETTINGS = {
   defaultColor: "#fbbc04",
   targetLanguage: "en",
   googleApiKey: "",
+  useKeychain: false,
+  googleApiSecretId: "",
   enableInReadingMode: true,
   enableInEditingMode: false,
   uiTheme: "auto",
@@ -1253,6 +1265,27 @@ var SUPPORTED_LANGUAGES = [
 ];
 var TranslatorService = class {
   /**
+   * Tests whether a Google Cloud Translation API key is valid.
+   */
+  static async verifyApiKey(apiKey) {
+    const cleanKey = apiKey.trim();
+    if (!cleanKey) return false;
+    const url = `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(cleanKey)}`;
+    const response = await (0, import_obsidian4.requestUrl)({
+      url,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        q: "Hello",
+        target: "es",
+        format: "text"
+      })
+    });
+    return response.status === 200 && Boolean(response.json?.data?.translations?.[0]);
+  }
+  /**
    * Translate text to target language using either official Google Cloud Translation API (if API key provided)
    * or Google's client endpoint.
    */
@@ -2118,6 +2151,7 @@ var ReaderCompanionView = class extends import_obsidian5.ItemView {
 
 // src/settings.ts
 var import_obsidian6 = require("obsidian");
+var obsidian = __toESM(require("obsidian"));
 var ReaderCompanionSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -2151,13 +2185,95 @@ var ReaderCompanionSettingTab = class extends import_obsidian6.PluginSettingTab 
         await this.plugin.savePluginData();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Google Cloud Translation API Key (Optional)").setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.").addText((text) => {
-      text.setPlaceholder("Enter your API key...").setValue(this.plugin.settings.googleApiKey || "").onChange(async (val) => {
-        this.plugin.settings.googleApiKey = val.trim();
-        await this.plugin.savePluginData();
+    const isKeychainSupported = this.plugin.keychain.isAvailable();
+    const SecretComponentClass = obsidian.SecretComponent;
+    const useKeychain = Boolean(
+      this.plugin.settings.useKeychain || isKeychainSupported && Boolean(this.plugin.settings.googleApiSecretId)
+    );
+    if (isKeychainSupported) {
+      new import_obsidian6.Setting(containerEl).setName("Use Obsidian Keychain (SecretStorage)").setDesc(
+        isKeychainSupported ? "Store and select your Google Cloud Translation API key securely from your Obsidian Keychain instead of plaintext." : "Obsidian Keychain (SecretStorage) is supported in Obsidian v1.11.4+. You are currently using plaintext storage."
+      ).addToggle((toggle) => {
+        toggle.setValue(useKeychain).setDisabled(!isKeychainSupported).onChange(async (val) => {
+          this.plugin.settings.useKeychain = val;
+          await this.plugin.savePluginData();
+          this.display();
+        });
       });
-      text.inputEl.type = "password";
-    });
+    }
+    if (useKeychain && isKeychainSupported) {
+      if (SecretComponentClass) {
+        new import_obsidian6.Setting(containerEl).setName("Keychain Secret").setDesc("Select an existing secret or click '+' to create a secret containing your Google Cloud Translation API key.").addComponent((cb) => {
+          const comp = new SecretComponentClass(this.app, cb);
+          comp.setValue(this.plugin.settings.googleApiSecretId || "").onChange(async (val) => {
+            this.plugin.settings.googleApiSecretId = val;
+            await this.plugin.savePluginData();
+          });
+          return comp;
+        }).addButton((btn) => {
+          btn.setButtonText("Test Key").setCta().onClick(async () => {
+            const key = this.plugin.keychain.getGoogleApiKey(this.plugin.settings);
+            if (!key) {
+              new import_obsidian6.Notice("No secret selected or secret is empty in Obsidian Keychain.");
+              return;
+            }
+            btn.setButtonText("Testing...");
+            btn.setDisabled(true);
+            try {
+              const isValid = await TranslatorService.verifyApiKey(key);
+              if (isValid) {
+                new import_obsidian6.Notice("Google Cloud Translation API key verified successfully.");
+              } else {
+                new import_obsidian6.Notice("Failed to verify Google Cloud Translation API key.");
+              }
+            } catch (err) {
+              new import_obsidian6.Notice(`Verification failed: ${err.message || "Unknown error"}`);
+            } finally {
+              btn.setButtonText("Test Key");
+              btn.setDisabled(false);
+            }
+          });
+        });
+      } else {
+        new import_obsidian6.Setting(containerEl).setName("Keychain Secret Identifier").setDesc("Enter the name of your secret in Obsidian Keychain.").addText((text) => {
+          text.setPlaceholder("e.g. google-translate-api-key").setValue(this.plugin.settings.googleApiSecretId || "").onChange(async (val) => {
+            this.plugin.settings.googleApiSecretId = val.trim();
+            await this.plugin.savePluginData();
+          });
+        });
+      }
+    } else {
+      new import_obsidian6.Setting(containerEl).setName("Google Cloud Translation API Key (Optional)").setDesc("If provided, your official Google Cloud Translation API will be used instead of the default free endpoint.").addText((text) => {
+        text.setPlaceholder("Enter your API key...").setValue(this.plugin.settings.googleApiKey || "").onChange(async (val) => {
+          this.plugin.settings.googleApiKey = val.trim();
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.type = "password";
+      }).addButton((btn) => {
+        btn.setButtonText("Test Key").setCta().onClick(async () => {
+          const key = this.plugin.settings.googleApiKey?.trim();
+          if (!key) {
+            new import_obsidian6.Notice("Please enter an API key to test.");
+            return;
+          }
+          btn.setButtonText("Testing...");
+          btn.setDisabled(true);
+          try {
+            const isValid = await TranslatorService.verifyApiKey(key);
+            if (isValid) {
+              new import_obsidian6.Notice("Google Cloud Translation API key verified successfully.");
+            } else {
+              new import_obsidian6.Notice("Failed to verify Google Cloud Translation API key.");
+            }
+          } catch (err) {
+            new import_obsidian6.Notice(`Verification failed: ${err.message || "Unknown error"}`);
+          } finally {
+            btn.setButtonText("Test Key");
+            btn.setDisabled(false);
+          }
+        });
+      });
+    }
     new import_obsidian6.Setting(containerEl).setName("Enable in Reading View").setDesc("Show selection popup menu when text is selected in Reading Mode.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.enableInReadingMode);
       toggle.onChange(async (val) => {
@@ -2412,6 +2528,64 @@ var VocabularyService = class {
   }
 };
 
+// src/keychain.ts
+var KeychainService = class {
+  constructor(app) {
+    this.app = app;
+  }
+  /**
+   * Checks whether Obsidian native SecretStorage (Keychain) is supported
+   */
+  isAvailable() {
+    const secretStorage = this.app.secretStorage;
+    return Boolean(secretStorage && typeof secretStorage.getSecret === "function");
+  }
+  /**
+   * Retrieves a secret by ID from Obsidian SecretStorage
+   */
+  getSecret(secretId) {
+    if (!this.isAvailable() || !secretId) return null;
+    try {
+      const secretStorage = this.app.secretStorage;
+      const val = secretStorage.getSecret(secretId);
+      return typeof val === "string" ? val.trim() : null;
+    } catch (e) {
+      console.warn("Reader Companion: Failed to read secret from Keychain", e);
+      return null;
+    }
+  }
+  /**
+   * Stores a secret into Obsidian SecretStorage (OS Keychain)
+   */
+  async setSecret(secretId, value) {
+    if (!this.isAvailable() || !secretId) return false;
+    try {
+      const secretStorage = this.app.secretStorage;
+      if (typeof secretStorage.setSecret === "function") {
+        await secretStorage.setSecret(secretId, value.trim());
+        return true;
+      }
+    } catch (e) {
+      console.error("Reader Companion: Failed to save to Keychain", e);
+    }
+    return false;
+  }
+  /**
+   * Resolves the Google Cloud Translation API Key from Keychain or settings
+   */
+  getGoogleApiKey(settings) {
+    if (settings.useKeychain || settings.googleApiSecretId) {
+      if (settings.googleApiSecretId) {
+        const secret = this.getSecret(settings.googleApiSecretId);
+        if (secret && typeof secret === "string" && secret.trim()) {
+          return secret.trim();
+        }
+      }
+    }
+    return settings.googleApiKey ? settings.googleApiKey.trim() : "";
+  }
+};
+
 // src/main.ts
 var ReaderCompanionPlugin = class extends import_obsidian8.Plugin {
   constructor() {
@@ -2431,6 +2605,7 @@ var ReaderCompanionPlugin = class extends import_obsidian8.Plugin {
   }
   async onload() {
     await this.loadPluginData();
+    this.keychain = new KeychainService(this.app);
     this.storage = new StorageManager(this);
     this.highlighter = new DomHighlighter(this);
     this.vocabulary = new VocabularyService(this);
@@ -2588,7 +2763,12 @@ var ReaderCompanionPlugin = class extends import_obsidian8.Plugin {
         }
         if (selection) {
           const coords = this.getSelectionCoordinates();
-          this.translateModal.show(coords, selection, this.settings.targetLanguage);
+          this.translateModal.show(
+            coords,
+            selection,
+            this.settings.targetLanguage,
+            this.keychain.getGoogleApiKey(this.settings)
+          );
         } else {
           new import_obsidian8.Notice("Please select text to translate.");
         }
@@ -2998,7 +3178,7 @@ var ReaderCompanionPlugin = class extends import_obsidian8.Plugin {
       targetCoords,
       text,
       this.settings.targetLanguage,
-      this.settings.googleApiKey
+      this.keychain.getGoogleApiKey(this.settings)
     );
   }
   handleDefine(word, coords) {
